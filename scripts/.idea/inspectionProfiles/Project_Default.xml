@@ -1,0 +1,101 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="annotated-types" />
+          <option value="anyio" />
+          <option value="cfgv" />
+          <option value="click" />
+          <option value="distlib" />
+          <option value="fastapi" />
+          <option value="fastapi-cli" />
+          <option value="filelock" />
+          <option value="greenlet" />
+          <option value="h11" />
+          <option value="httptools" />
+          <option value="identify" />
+          <option value="idna" />
+          <option value="markdown-it-py" />
+          <option value="mdurl" />
+          <option value="mypy" />
+          <option value="mypy_extensions" />
+          <option value="nodeenv" />
+          <option value="pathspec" />
+          <option value="platformdirs" />
+          <option value="pre_commit" />
+          <option value="psycopg" />
+          <option value="psycopg-binary" />
+          <option value="pydantic" />
+          <option value="pydantic-settings" />
+          <option value="pydantic_core" />
+          <option value="Pygments" />
+          <option value="pyright" />
+          <option value="python-dotenv" />
+          <option value="PyYAML" />
+          <option value="rich" />
+          <option value="rich-toolkit" />
+          <option value="ruff" />
+          <option value="shellingham" />
+          <option value="sniffio" />
+          <option value="SQLAlchemy" />
+          <option value="sqlmodel" />
+          <option value="starlette" />
+          <option value="typer" />
+          <option value="typing-inspection" />
+          <option value="typing_extensions" />
+          <option value="uvicorn" />
+          <option value="uvloop" />
+          <option value="virtualenv" />
+          <option value="watchfiles" />
+          <option value="websockets" />
+          <option value="alembic" />
+          <option value="APScheduler" />
+          <option value="ffmpeg-python" />
+          <option value="Jinja2" />
+          <option value="gunicorn" />
+          <option value="httpx" />
+          <option value="croniter" />
+          <option value="pandas" />
+          <option value="openpyxl" />
+          <option value="pillow" />
+          <option value="passlib" />
+          <option value="user-agents" />
+          <option value="PyJWT" />
+          <option value="psutil" />
+          <option value="python-multipart" />
+          <option value="bcrypt" />
+          <option value="itsdangerous" />
+          <option value="aiofiles" />
+          <option value="redis" />
+          <option value="cryptography" />
+          <option value="pydantic_validation_decorator" />
+          <option value="loguru" />
+          <option value="fastapi-limiter" />
+          <option value="sqlglot" />
+          <option value="asyncmy" />
+          <option value="PyMySQL" />
+          <option value="asyncpg" />
+          <option value="psycopg2" />
+          <option value="aiosqlite" />
+          <option value="langchain" />
+          <option value="langchain-openai" />
+          <option value="langchain-anthropic" />
+          <option value="langchain-mcp-adapters" />
+          <option value="celery" />
+          <option value="dashscope" />
+          <option value="openai" />
+          <option value="eventlet" />
+        </list>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyUnresolvedReferencesInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredIdentifiers">
+        <list>
+          <option value="dict.*" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
