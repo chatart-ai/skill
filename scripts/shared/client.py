@@ -9,8 +9,8 @@ from enum import IntEnum
 from .config import load_config
 from typing import Any, Optional
 
-#BASE_URL = "https://api.chatartpro.com"
-BASE_URL = "https://chatartpro-api.ifonelab.net"
+BASE_URL = "https://api.chatartpro.com"
+#BASE_URL = "https://chatartpro-api.ifonelab.net"
 
 class TaskStatus(IntEnum):
     IN_PROGRESS = 0
@@ -71,7 +71,7 @@ class ChatArtClient:
             cfg = load_config()
             self._api_key = cfg["api_key"]
             self._uid = cfg["uid"]
-        self.is_debug = True
+        self.is_debug = False
 
     @property
     def headers(self) -> dict:
