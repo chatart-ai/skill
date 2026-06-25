@@ -64,43 +64,64 @@ DEFAULT_INTERVAL = 30
 # ---------------------------------------------------------------------------
 
 TEXT2IMAGE_MODELS = {
-    "Gpt Image 2":      {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "5:4", "4:5"],      "resolution": None, "model_id": 2},
-    "Nano Banana 2":    {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "4K"], "model_id": 9},
-    "Nano Banana Pro":  {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "4K"], "model_id": 4},
-    "Seedream 5.0":     {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "3K"], "model_id": 5},
+    "Gpt Image 2":      {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "5:4", "4:5"],      "resolution": ["1K", "2K", "4K"], "model_id": 2, "quality": ["low", "medium", "high"]},
+    "Nano Banana 2":    {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "4K"], "model_id": 9, "quality": None},
+    "Nano Banana Pro":  {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "4K"], "model_id": 4, "quality": None},
+    "Seedream 5.0":     {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "3K"], "model_id": 5, "quality": None},
 }
 
 IMAGE_EDIT_MODELS = {
-    "Gpt Image 2":      {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "5:4", "4:5"],      "resolution": None, "model_id": 2},
-    "Nano Banana 2":    {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "4K"], "model_id": 9},
-    "Nano Banana Pro":  {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "4K"], "model_id": 4},
-    "Seedream 5.0":     {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "3K"], "model_id": 8},
+    "Gpt Image 2":      {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "5:4", "4:5"],      "resolution": ["1K", "2K", "4K"], "model_id": 2, "quality": ["low", "medium", "high"]},
+    "Nano Banana 2":    {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "4K"], "model_id": 9, "quality": None},
+    "Nano Banana Pro":  {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "4K"], "model_id": 4, "quality": None},
+    "Seedream 5.0":     {"aspectRatio": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],                    "resolution": ["2K", "3K"], "model_id": 8, "quality": None},
 }
 
 MODEL_REGISTRY = {"text2image": TEXT2IMAGE_MODELS, "image_edit": IMAGE_EDIT_MODELS}
 
 # ---------------------------------------------------------------------------
-# Pricing — credits per task (exact lookup table based on model + resolution + count).
-# Key format: "model|resolution" -> {count: totalCost}
-# For models without resolution, use "model|default"
+# Pricing — credits per task (exact lookup table based on model + resolution + quality).
+# Key format: "model|resolution" -> {1: totalCost}
+# For models without quality, use "model|resolution" (quality=None in registry).
+# Gpt Image 2 uses quality-based pricing: "Gpt Image 2|default|low|medium|high"
 # ---------------------------------------------------------------------------
 
 _PRICING = {
     "text2image": {
-        "Nano Banana 2|2K":   {1: 6,  2: 12, 3: 15, 4: 16},
-        "Nano Banana 2|4K":   {1: 10, 2: 18, 3: 24, 4: 28},
-        "Nano Banana Pro|2K": {1: 10, 2: 20, 3: 28, 4: 36},
-        "Nano Banana Pro|4K": {1: 16, 2: 32, 3: 42, 4: 56},
-        "Gpt Image 2|default":{1: 8,  2: 16, 3: 21, 4: 28},
-        "Seedream 5.0|2K":    {1: 6,  2: 12, 3: 15, 4: 16},
-        "Seedream 5.0|3K":    {1: 10, 2: 18, 3: 24, 4: 28},
-    },
-    "image_edit": {
+        # Gpt Image 2 — resolution + quality pricing
+        "Gpt Image 2|1K|low":     {1: 6},
+        "Gpt Image 2|1K|medium":   {1: 20},
+        "Gpt Image 2|1K|high":     {1: 70},
+        "Gpt Image 2|2K|low":     {1: 8},
+        "Gpt Image 2|2K|medium":   {1: 30},
+        "Gpt Image 2|2K|high":     {1: 100},
+        "Gpt Image 2|4K|low":     {1: 10},
+        "Gpt Image 2|4K|medium":   {1: 50},
+        "Gpt Image 2|4K|high":     {1: 180},
+        # Other models
         "Nano Banana 2|2K":   {1: 6},
         "Nano Banana 2|4K":   {1: 10},
         "Nano Banana Pro|2K": {1: 10},
         "Nano Banana Pro|4K": {1: 16},
-        "Gpt Image 2|default":{1: 8},
+        "Seedream 5.0|2K":    {1: 6},
+        "Seedream 5.0|3K":    {1: 10},
+    },
+    "image_edit": {
+        # Gpt Image 2 — resolution + quality pricing
+        "Gpt Image 2|1K|low":     {1: 6},
+        "Gpt Image 2|1K|medium":   {1: 20},
+        "Gpt Image 2|1K|high":     {1: 70},
+        "Gpt Image 2|2K|low":     {1: 8},
+        "Gpt Image 2|2K|medium":   {1: 30},
+        "Gpt Image 2|2K|high":     {1: 100},
+        "Gpt Image 2|4K|low":     {1: 10},
+        "Gpt Image 2|4K|medium":   {1: 50},
+        "Gpt Image 2|4K|high":     {1: 180},
+        # Other models
+        "Nano Banana 2|2K":   {1: 6},
+        "Nano Banana 2|4K":   {1: 10},
+        "Nano Banana Pro|2K": {1: 10},
+        "Nano Banana Pro|4K": {1: 16},
         "Seedream 5.0|2K":    {1: 6},
         "Seedream 5.0|3K":    {1: 10},
     },
@@ -193,29 +214,61 @@ def get_image_definition_value(quality: str) -> int | None:
     
     # 转换为大写以支持大小写不敏感匹配
     quality_upper = quality.upper() if quality else None
-    
+
     return definition_map.get(quality_upper)
 
-def estimate_cost(task_type: str, model: str, resolution: str | None,
-                  count: int = 1) -> float | None:
-    """Return estimated total cost in credits, or None if model/params unknown.
-    
-    Uses exact lookup table based on model + resolution + count.
-    Count must be between 1 and 4.
+def get_quality_level_value(quality: str) -> str | None:
     """
-    # Normalize resolution key
-    res_key = resolution if resolution else "default"
-    pricing_key = f"{model}|{res_key}"
-    
+    根据品质字符串获取对应的 quality_level value 值。
+
+    Args:
+        quality: 品质字符串, 如 'low', 'medium', 'high'
+
+    Returns:
+        对应的 value 值,如果未找到则返回 None
+
+    Examples:
+        >>> get_quality_level_value('low')
+        1
+        >>> get_quality_level_value('medium')
+        2
+        >>> get_quality_level_value('high')
+        3
+    """
+    quality_map = {
+        'low': 'low',
+        'medium': 'medium',
+        'high': 'high',
+    }
+
+    quality_lower = quality.lower() if quality else None
+
+    return quality_map.get(quality_lower)
+
+def estimate_cost(task_type: str, model: str, resolution: str | None, quality: str | None = None) -> float | None:
+    """Return estimated total cost in credits, or None if model/params unknown.
+
+    Uses exact lookup table based on model + resolution + quality.
+    For models without quality support, quality is ignored.
+    """
+    registry = MODEL_REGISTRY.get(task_type, {})
+    model_spec = registry.get(model, {})
+    model_quality = model_spec.get("quality")
+    model_resolution = model_spec.get("resolution")
+
+    # Use actual resolution if model supports it, else "default"
+    res_key = resolution if (model_resolution and resolution) else "default"
+
+    if model_quality and quality:
+        pricing_key = f"{model}|{res_key}|{quality}"
+    else:
+        pricing_key = f"{model}|{res_key}"
+
     prices = _PRICING.get(task_type, {}).get(pricing_key)
     if not prices:
         return None
-    
-    # Validate count range
-    if count < 1 or count > 4:
-        return None
-    
-    return float(prices.get(count))
+
+    return float(prices.get(1))
 
 def get_model_id(task_type: str, model: str, quiet: bool) -> int:
     """Warn on stderr if parameters are incompatible with model constraints."""
@@ -235,7 +288,7 @@ def get_model_id(task_type: str, model: str, quiet: bool) -> int:
     return spec.get("model_id", 9)
 
 def validate_model_params(task_type: str, model: str, aspect_ratio: str | None,
-                          resolution: str | None, quiet: bool) -> None:
+                          resolution: str | None, quality: str | None, quiet: bool) -> None:
     """Warn on stderr if parameters are incompatible with model constraints."""
     registry = MODEL_REGISTRY.get(task_type, {})
     if model not in registry:
@@ -280,6 +333,23 @@ def validate_model_params(task_type: str, model: str, aspect_ratio: str | None,
                 file=sys.stderr,
             )
 
+    # Validate quality
+    model_quality = spec.get("quality")
+    if quality and model_quality is None:
+        if not quiet:
+            print(
+                f"Warning: model '{model}' does not support quality parameter "
+                f"(got '{quality}'). This parameter will be ignored.",
+                file=sys.stderr,
+            )
+    elif quality and model_quality and quality not in model_quality:
+        if not quiet:
+            print(
+                f"Warning: model '{model}' supports quality "
+                f"{model_quality}, got '{quality}'.",
+                file=sys.stderr,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -301,6 +371,7 @@ def build_text2image_body(args, model_id) -> dict:
             "site_url": ""
         },
         "description": args.prompt,
+        "picture_counts": 1,
     }
 
     if args.aspect_ratio:
@@ -312,8 +383,12 @@ def build_text2image_body(args, model_id) -> dict:
     if args.resolution:
         body["image_definition"] = get_image_definition_value(args.resolution)
 
-    if args.count:
-        body["picture_counts"] = args.count
+    # Gpt Image 2 supports quality levels
+    if getattr(args, "quality", None):
+        registry = MODEL_REGISTRY.get("text2image", {})
+        model_spec = registry.get(args.model, {})
+        if model_spec.get("quality"):
+            body["quality"] = get_quality_level_value(args.quality)
 
     return body
 
@@ -329,6 +404,7 @@ def build_image_edit_body(args, model_id, client: ChatArtClient) -> dict:
             "site_url": ""
         },
         "description": args.prompt,
+        "picture_counts": 1,
     }
 
     image_urls = []
@@ -340,7 +416,7 @@ def build_image_edit_body(args, model_id, client: ChatArtClient) -> dict:
                 image_urls.append(resolve_file(client, ref, args.quiet))
             else:
                 image_urls.append(ref)
-    
+
     if image_urls:
         body["reference_image"] = image_urls
 
@@ -353,8 +429,12 @@ def build_image_edit_body(args, model_id, client: ChatArtClient) -> dict:
     if args.resolution:
         body["image_definition"] = get_image_definition_value(args.resolution)
 
-    if args.count:
-        body["picture_counts"] = args.count
+    # Gpt Image 2 supports quality levels
+    if getattr(args, "quality", None):
+        registry = MODEL_REGISTRY.get("image_edit", {})
+        model_spec = registry.get(args.model, {})
+        if model_spec.get("quality"):
+            body["quality"] = get_quality_level_value(args.quality)
 
     return body
 
@@ -365,6 +445,7 @@ def build_body(args, client: ChatArtClient) -> dict:
         args.type, args.model,
         getattr(args, "aspect_ratio", None),
         getattr(args, "resolution", None),
+        getattr(args, "quality", None),
         args.quiet,
     )
 
@@ -481,8 +562,8 @@ def add_common_args(p):
                    help='Aspect ratio, e.g. "16:9", "1:1"')
     p.add_argument("--resolution", default="1K",
                    help='Resolution: "1K", "2K", "4K" (model-dependent, some require it, some forbid it)')
-    p.add_argument("--count", type=int, default=1,
-                   help="Number of images to generate (1-4, default: 1)")
+    p.add_argument("--quality", default="medium", choices=["low", "medium", "high"],
+                   help='Image quality: "low", "medium", "high" (only Gpt Image 2 supports this; other models ignore it)')
 
 def add_image_edit_args(p):
     """Add image-edit specific arguments."""
@@ -535,41 +616,40 @@ def cmd_list_models(args, parser):
     print(f"\n{type_label.get(task_type, task_type)} - Supported Models\n")
 
     if task_type == "image_edit":
-        print(f"{'Model':<22} {'Aspect Ratio':<45} {'Resolution':<22} {'Max Images'}")
-        print("-" * 100)
+        print(f"{'Model':<22} {'Aspect Ratio':<45} {'Resolution':<22} {'Quality':<15}")
+        print("-" * 110)
         for name, spec in registry.items():
             ar = ", ".join(spec["aspectRatio"])
             res = ", ".join(spec["resolution"]) if spec["resolution"] else "N/A (forbidden)"
-            mi = str(spec.get("maxImages", "N/A"))
-            print(f"{name:<22} {ar:<45} {res:<22} {mi}")
+            qual = ", ".join(spec["quality"]) if spec["quality"] else "N/A"
+            print(f"{name:<22} {ar:<45} {res:<22} {qual:<15}")
     else:
-        print(f"{'Model':<22} {'Aspect Ratio':<45} {'Resolution'}")
-        print("-" * 80)
+        print(f"{'Model':<22} {'Aspect Ratio':<45} {'Resolution':<22} {'Quality':<15}")
+        print("-" * 110)
         for name, spec in registry.items():
             ar = ", ".join(spec["aspectRatio"])
             res = ", ".join(spec["resolution"]) if spec["resolution"] else "N/A (forbidden)"
-            print(f"{name:<22} {ar:<45} {res}")
+            qual = ", ".join(spec["quality"]) if spec["quality"] else "N/A"
+            print(f"{name:<22} {ar:<45} {res:<22} {qual:<15}")
     print()
 
 
 def cmd_estimate_cost(args, parser):
     """Print estimated cost for a given model + parameters."""
-    cost = estimate_cost(args.type, args.model, args.resolution, args.count or 1)
+    cost = estimate_cost(args.type, args.model, args.resolution, args.quality)
     if cost is None:
         print(f"Cannot estimate cost for model '{args.model}' with given parameters.", file=sys.stderr)
         print("Use list-models to see available models, or check references/api-docs.md.", file=sys.stderr)
         sys.exit(1)
-    count = args.count or 1
-    unit = round(cost / count, 2)
     if args.json:
         print(json_mod.dumps({"type": args.type, "model": args.model,
-                               "resolution": args.resolution,
-                               "count": count, "unitCost": unit, "totalCost": cost}))
+                               "resolution": args.resolution or "default",
+                               "quality": args.quality,
+                               "totalCost": cost}))
     else:
         print(f"type: {args.type}  model: {args.model}  "
-              f"resolution: {args.resolution or 'default'}  count: {count}")
-        print(f"estimated unit cost: {unit} credits")
-        print(f"estimated total cost: {cost} credits")
+              f"resolution: {args.resolution or 'default'}  quality: {args.quality or 'N/A'}")
+        print(f"estimated cost: {cost} credits")
 
 
 def cmd_run(args, parser):
@@ -641,7 +721,7 @@ Examples:
 
   # Text-to-image
   python ai_image.py run --type text2image --model "Nano Banana" \\
-      --prompt "A futuristic city" --aspect-ratio "16:9" --count 2
+      --prompt "A futuristic city" --aspect-ratio "16:9"
 
   # Image editing
   python ai_image.py run --type image_edit --model "Nano Banana" \\
@@ -650,7 +730,7 @@ Examples:
 
   # Estimate cost
   python ai_image.py estimate-cost --type text2image --model "Nano Banana" \\
-      --resolution "2K" --count 2
+      --resolution "2K"
 
   # Query a timed-out task
   python ai_image.py query --type text2image --task-id <taskId>
@@ -695,7 +775,8 @@ Examples:
                         help="Task type")
     p_cost.add_argument("--model", required=True, help="Model display name")
     p_cost.add_argument("--resolution", default=None, help="Resolution (e.g. 1K, 2K, 4K)")
-    p_cost.add_argument("--count", type=int, default=1, help="generateCount (1-4)")
+    p_cost.add_argument("--quality", default=None, choices=["low", "medium", "high"],
+                        help='Quality: "low", "medium", "high" (only Gpt Image 2)')
     p_cost.add_argument("--json", action="store_true", help="Output as JSON")
 
     args = parser.parse_args()

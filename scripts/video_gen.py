@@ -24,8 +24,8 @@ Subcommands:
 Usage:
     python video_gen.py run  --type i2v  --model "Seedance 2.0" --first-frame <fileId|path> --prompt "..." [options]
     python video_gen.py run  --type t2v  --model "Seedance 2.0" --prompt "..." [options]
-    python video_gen.py run  --type extend --model "LitAI 5" --input_video <fileId|path> --prompt "..." [options]
-    python video_gen.py query  --type <i2v|t2v|extend|anim|a2ls> --task-id <taskId> [options]
+    python video_gen.py run  --type extend --model "PixVerse V6" --input_video <fileId|path> --prompt "..." [options]
+    python video_gen.py query  --type <i2v|t2v|extend> --task-id <taskId> [options]
     
 """
 
@@ -45,7 +45,7 @@ from shared.client import ChatArtClient, ChatArtError
 from shared.upload import resolve_local_file
 from shared.media_util import MediaUtils
 
-TASK_TYPES = ("i2v", "t2v", "extend")
+TASK_TYPES = ("i2v", "t2v", "omni", "extend")
 
 ENDPOINTS = {
     "i2v": {
@@ -53,6 +53,10 @@ ENDPOINTS = {
         "query": "/web/video/get-video-task",
     },
     "t2v": {
+        "submit": "/web/video/generate-video",
+        "query": "/web/video/get-video-task",
+    },
+	"omni": {
         "submit": "/web/video/generate-video",
         "query": "/web/video/get-video-task",
     },
@@ -73,31 +77,40 @@ DEFAULT_INTERVAL = 30
 
 I2V_MODELS = {
     # "LitAI 5":                      {"aspectRatio": None,                                          "resolution": [360, 540, 720, 1080],        "duration": "5,8,12",   "nativeAudio": True,  "inputMode": "first_end"},
-    "Seedance 2.0":                 {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720, 1080],              "duration": "5,10,15",   "nativeAudio": True,  "inputMode": "first_end"},
-    "Seedance 2.0 Fast":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720, 1080],              "duration": "5,10,15",   "nativeAudio": True,  "inputMode": "first_end"},
-    "Seedance 1.5 Pro":             {"aspectRatio": None,        								   "resolution": [480, 720, 1080],       "duration": "5,10",   "nativeAudio": True,  "inputMode": "first_end"},
-    "Kling V3":                     {"aspectRatio": None,                                          "resolution": [720, 1080],       "duration": "5,10,15",   "nativeAudio": True,  "inputMode": "first_end"},
-    "HappyHorse1.0":                {"aspectRatio": None,                                          "resolution": [720, 1080],       "duration": "5,10","nativeAudio": False, "inputMode": "first_end"},
+    "Seedance 2.0":                 {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720, 1080],              "duration": "5,10,15",   "nativeAudio": True,  "inputMode": ["first_last_frames", "omni_reference"]},
+    "Seedance 2.0 Fast":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720],              "duration": "5,10,15",   "nativeAudio": True,  "inputMode": ["first_last_frames", "omni_reference"]},
+    "Seedance 2.0 Mini":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9", "21:9"],         "resolution": [480, 720],              "duration": "5,10,15",   "nativeAudio": True,  "inputMode": ["first_last_frames", "omni_reference"]},
+    "Seedance 1.5 Pro":             {"aspectRatio": None,        								   "resolution": [480, 720, 1080],       "duration": "5,10",   "nativeAudio": True,  "inputMode": ["single_image"]},
+    "Kling V3":                     {"aspectRatio": None,                                          "resolution": [720, 1080, 2160],       "duration": "5,10,15",   "nativeAudio": True,  "inputMode": ["single_image", "first_last_frames"]},
+    "HappyHorse1.0":                {"aspectRatio": None,                                          "resolution": [720, 1080],       "duration": "5,10","nativeAudio": True, "inputMode": ["omni_reference"]},
 }
 
 T2V_MODELS = {
     # "LitAI 5":                      {"aspectRatio": ["9:16", "1:1", "4:3", "16:9"],                "resolution": [360, 540, 720, 1080],        "duration": "5,8,12",   "nativeAudio": True},
     "Seedance 2.0":                 {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720, 1080],              "duration": "5,10,15",   "nativeAudio": True},
-    "Seedance 2.0 Fast":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720, 1080],              "duration": "5,10,15",   "nativeAudio": True},
+    "Seedance 2.0 Fast":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720],              "duration": "5,10,15",   "nativeAudio": True},
+    "Seedance 2.0 Mini":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9", "21:9"],         "resolution": [480, 720],              "duration": "5,10,15",   "nativeAudio": True},
     "Seedance 1.5 Pro":             {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720, 1080],        "duration": "5,10",   "nativeAudio": True},
-    "Kling V3":                     {"aspectRatio": ["9:16", "1:1", "16:9"],                       "resolution": [720, 1080],        "duration": "5,10,15",   "nativeAudio": True},
+    "Kling V3":                     {"aspectRatio": ["9:16", "1:1", "16:9"],                       "resolution": [720, 1080, 2160],        "duration": "5,10,15",   "nativeAudio": True},
     "HappyHorse1.0":                {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [720, 1080],       "duration": "5,10",      "nativeAudio": True},
 }
 
+# Omni Reference models - supports 1-9 reference images with flexible composition
+OMNI_MODELS = {
+    "Seedance 2.0":                 {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720, 1080],  "duration": "5,10,15",   "nativeAudio": True},
+    "Seedance 2.0 Fast":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720],  "duration": "5,10,15",   "nativeAudio": True},
+    "Seedance 2.0 Mini":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9", "21:9"], "resolution": [480, 720],  "duration": "5,10,15",   "nativeAudio": True},
+    "HappyHorse1.0":                {"aspectRatio": None,                                          "resolution": [720, 1080],       "duration": "5,10",      "nativeAudio": False},
+}
 
 EXTEND_MODELS = {
     "Seedance 2.0":                 {"aspectRatio": None,           "resolution": [480, 720],               "duration": "5,10,15",   "nativeAudio": True},
     "Seedance 2.0 Fast":            {"aspectRatio": None,           "resolution": [480, 720],               "duration": "5,10,15",   "nativeAudio": True},
     "Kling V3":                     {"aspectRatio": None,           "resolution": [720, 1080],              "duration": "5,10,15",   "nativeAudio": True},
-    "PixVerse V6":                  {"aspectRatio": None,           "resolution": [360, 540, 720, 1080],    "duration": "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",  "internetSearch": False,  "nativeAudio": True},
+    "PixVerse V6":                  {"aspectRatio": None,           "resolution": [360, 540, 720, 1080],    "duration": "5,10,15",  "internetSearch": False,  "nativeAudio": True},
 }
 
-MODEL_REGISTRY = {"i2v": I2V_MODELS, "t2v": T2V_MODELS, "extend": EXTEND_MODELS}
+MODEL_REGISTRY = {"i2v": I2V_MODELS, "t2v": T2V_MODELS, "omni": OMNI_MODELS, "extend": EXTEND_MODELS}
 # ---------------------------------------------------------------------------
 # Per-second pricing rates (credits, generatingCount=1).
 # Key: (resolution_or_0, sound_on_or_None). 0 = resolution-independent, None = sound irrelevant.
@@ -107,32 +120,31 @@ MODEL_REGISTRY = {"i2v": I2V_MODELS, "t2v": T2V_MODELS, "extend": EXTEND_MODELS}
 
 _PRICING_TABLE = {
     # Seedance 2.0
-    ("Seedance 2.0", 480, 5): 64,
-    ("Seedance 2.0", 480, 10): 128,
-    ("Seedance 2.0", 480, 15): 192,
-    ("Seedance 2.0", 720, 5): 64,
-    ("Seedance 2.0", 720, 10): 128,
-    ("Seedance 2.0", 720, 15): 192,
-    ("Seedance 2.0", 1080, 5): 80,
-    ("Seedance 2.0", 1080, 10): 160,
-    ("Seedance 2.0", 1080, 15): 240,
-    ("Seedance 2.0", 2160, 5): 96,
-    ("Seedance 2.0", 2160, 10): 192,
-    ("Seedance 2.0", 2160, 15): 288,
+    ("Seedance 2.0", 480, 5): 60,
+    ("Seedance 2.0", 480, 10): 120,
+    ("Seedance 2.0", 480, 15): 180,
+    ("Seedance 2.0", 720, 5): 90,
+    ("Seedance 2.0", 720, 10): 180,
+    ("Seedance 2.0", 720, 15): 270,
+    ("Seedance 2.0", 1080, 5): 120,
+    ("Seedance 2.0", 1080, 10): 240,
+    ("Seedance 2.0", 1080, 15): 360,
     
     # Seedance 2.0 Fast
-    ("Seedance 2.0 Fast", 480, 5): 36,
-    ("Seedance 2.0 Fast", 480, 10): 72,
-    ("Seedance 2.0 Fast", 480, 15): 108,
-    ("Seedance 2.0 Fast", 720, 5): 36,
-    ("Seedance 2.0 Fast", 720, 10): 72,
-    ("Seedance 2.0 Fast", 720, 15): 108,
-    ("Seedance 2.0 Fast", 1080, 5): 48,
-    ("Seedance 2.0 Fast", 1080, 10): 96,
-    ("Seedance 2.0 Fast", 1080, 15): 144,
-    ("Seedance 2.0 Fast", 2160, 5): 60,
-    ("Seedance 2.0 Fast", 2160, 10): 120,
-    ("Seedance 2.0 Fast", 2160, 15): 180,
+    ("Seedance 2.0 Fast", 480, 5): 30,
+    ("Seedance 2.0 Fast", 480, 10): 60,
+    ("Seedance 2.0 Fast", 480, 15): 90,
+    ("Seedance 2.0 Fast", 720, 5): 60,
+    ("Seedance 2.0 Fast", 720, 10): 120,
+    ("Seedance 2.0 Fast", 720, 15): 180,
+
+    # Seedance 2.0 Mini
+    ("Seedance 2.0 Mini", 480, 5): 40,
+    ("Seedance 2.0 Mini", 480, 10): 80,
+    ("Seedance 2.0 Mini", 480, 15): 120,
+    ("Seedance 2.0 Mini", 720, 5): 60,
+    ("Seedance 2.0 Mini", 720, 10): 120,
+    ("Seedance 2.0 Mini", 720, 15): 180,
     
     # Seedance 1.5 Pro
     ("Seedance 1.5 Pro", 480, 5): 32,
@@ -162,68 +174,17 @@ _PRICING_TABLE = {
     ("HappyHorse1.0", 1080, 15): 216,
 
     # PixVerse V6
-    ("PixVerse V6", 360, 1): 10,
-    ("PixVerse V6", 360, 2): 20,
-    ("PixVerse V6", 360, 3): 30,
-    ("PixVerse V6", 360, 4): 40,
-    ("PixVerse V6", 360, 5): 50,
-    ("PixVerse V6", 360, 6): 60,
-    ("PixVerse V6", 360, 7): 70,
-    ("PixVerse V6", 360, 8): 80,
-    ("PixVerse V6", 360, 9): 90,
-    ("PixVerse V6", 360, 10): 100,
-    ("PixVerse V6", 360, 11): 110,
-    ("PixVerse V6", 360, 12): 120,
-    ("PixVerse V6", 360, 13): 130,
-    ("PixVerse V6", 360, 14): 140,
-    ("PixVerse V6", 360, 15): 150,
-
-    ("PixVerse V6", 540, 1): 10,
-    ("PixVerse V6", 540, 2): 20,
-    ("PixVerse V6", 540, 3): 30,
-    ("PixVerse V6", 540, 4): 40,
-    ("PixVerse V6", 540, 5): 50,
-    ("PixVerse V6", 540, 6): 60,
-    ("PixVerse V6", 540, 7): 70,
-    ("PixVerse V6", 540, 8): 80,
-    ("PixVerse V6", 540, 9): 90,
-    ("PixVerse V6", 540, 10): 100,
-    ("PixVerse V6", 540, 11): 110,
-    ("PixVerse V6", 540, 12): 120,
-    ("PixVerse V6", 540, 13): 130,
-    ("PixVerse V6", 540, 14): 140,
-    ("PixVerse V6", 540, 15): 150,
-
-    ("PixVerse V6", 720, 1): 10,
-    ("PixVerse V6", 720, 2): 20,
-    ("PixVerse V6", 720, 3): 30,
-    ("PixVerse V6", 720, 4): 40,
-    ("PixVerse V6", 720, 5): 50,
-    ("PixVerse V6", 720, 6): 60,
-    ("PixVerse V6", 720, 7): 70,
-    ("PixVerse V6", 720, 8): 80,
-    ("PixVerse V6", 720, 9): 90,
-    ("PixVerse V6", 720, 10): 100,
-    ("PixVerse V6", 720, 11): 110,
-    ("PixVerse V6", 720, 12): 120,
-    ("PixVerse V6", 720, 13): 130,
-    ("PixVerse V6", 720, 14): 140,
-    ("PixVerse V6", 720, 15): 150,
-
-    ("PixVerse V6", 1080, 1): 10,
-    ("PixVerse V6", 1080, 2): 20,
-    ("PixVerse V6", 1080, 3): 30,
-    ("PixVerse V6", 1080, 4): 40,
+    ("PixVerse V6", 360, 5): 20,
+    ("PixVerse V6", 360, 10): 40,
+    ("PixVerse V6", 360, 15): 60,
+    ("PixVerse V6", 540, 5): 25,
+    ("PixVerse V6", 540, 10): 50,
+    ("PixVerse V6", 540, 15): 75,
+    ("PixVerse V6", 720, 5): 30,
+    ("PixVerse V6", 720, 10): 60,
+    ("PixVerse V6", 720, 15): 90,
     ("PixVerse V6", 1080, 5): 50,
-    ("PixVerse V6", 1080, 6): 60,
-    ("PixVerse V6", 1080, 7): 70,
-    ("PixVerse V6", 1080, 8): 80,
-    ("PixVerse V6", 1080, 9): 90,
     ("PixVerse V6", 1080, 10): 100,
-    ("PixVerse V6", 1080, 11): 110,
-    ("PixVerse V6", 1080, 12): 120,
-    ("PixVerse V6", 1080, 13): 130,
-    ("PixVerse V6", 1080, 14): 140,
     ("PixVerse V6", 1080, 15): 150,
 }
 
@@ -235,6 +196,7 @@ MODEL_MAP = {
     "HappyHorse1.0": "happy-horse-1-0",
     "Seedance 1.5 Pro": "seedance-1.5-pro",
     "PixVerse V6": "pix-verse-6",
+    "Seedance 2.0 Mini": "seedance-2.0-mini",
 }
 
 def get_model_id_by_name(model_name: str) -> str | None:
@@ -252,6 +214,7 @@ def get_model_id_by_name(model_name: str) -> str | None:
         # name=Seedance 2.0 这里由于用户输入seedance2.0、seedance2或者seedance 2，下面条件判断无法进行匹配，所以这里需要进行处理，让其能够进行匹配
         if ((name == "Seedance 2.0" and model_name_lower in ["seedance 2.0", "seedance2.0", "seedance 2", "seedance2", "seedance"]) or
             (name == "Seedance 2.0 Fast" and model_name_lower in ["seedance 2.0 fast", "seedance2.0 fast", "seedance2.0fast", "seedance 2 fast", "seedance2 fast", "seedance2fast"]) or
+            (name == "Seedance 2.0 Mini" and model_name_lower in ["seedance 2.0 mini", "seedance2.0 mini", "seedance 2.0mini", "seedance2.0mini", "seedance 2 mini", "seedance2 mini", "seedance2mini"]) or
             (name == "Kling V3" and model_name_lower in ["kling v3", "kling v3.0", "klingv3", "kling 3", "kling3", "kling3.0", "kling"]) or
             (name == "HappyHorse1.0" and model_name_lower in ["happyhorse1.0", "happyhorse 1.0", "happy horse 1.0", "happyhorse", "happyhorse1", "happy horse", "happy horse 1"]) or
             (name == "Seedance 1.5 Pro" and model_name_lower in ["seedance 1.5 pro", "seedance1.5 pro", "seedance 1.5pro", "seedance1.5pro", "seedance 1.5", "seedance1.5", "seedance pro", "seedancepro"]) or
@@ -387,7 +350,10 @@ def build_anim_body(args, client: ChatArtClient) -> dict:
         else:
             body["img_url"] = args.input_image
     if args.resolution:
-        body["quality"] = str(args.resolution) + "p"
+        if args.resolution == 2160:
+            body["quality"] = "4k"
+        else:
+            body["quality"] = str(args.resolution) + "p"
     if args.duration:
         body["duration"] = args.duration
     if args.style:
@@ -419,7 +385,7 @@ def build_extend_body(args, client: ChatArtClient) -> dict:
         "function_mode": "single_image",
         "prompt": args.prompt,
         "image_url": [],
-        "sound": 0,
+        "sound": 1,
     }
     if args.model:
         body["gpt_type"] = get_model_id_by_name(args.model)
@@ -449,35 +415,81 @@ def build_i2v_body(args, client: ChatArtClient) -> dict:
     """Build request body for Image-to-Video."""
     body: dict[str, Any] = {
         "video_id": "102",
-        "sound": 0
+        "sound": 1
     }
 
     if args.model:
         body["gpt_type"] = get_model_id_by_name(args.model)
         body["original_model"] = get_model_id_by_name(args.model)
 
-    image_urls = []
+    if body["original_model"] is None:
+        raise ValueError(f"model name err")
+		
+    # Collect all image references
+    all_images = []
+    
+    # Process ref_images (omni mode, supports 1-9 images)
+    if args.ref_images:
+        for ref in args.ref_images:
+            if os.path.isfile(ref):
+                all_images.append(resolve_file(client, ref, args.quiet))
+            else:
+                all_images.append(ref)
+    
+    # Process first_frame and end_frame
+    frame_images = []
     if args.first_frame:
         if os.path.isfile(args.first_frame):
-            image_urls.append(resolve_file(client, args.first_frame, args.quiet))
+            frame_images.append(resolve_file(client, args.first_frame, args.quiet))
         else:
-            image_urls.append(args.first_frame)
-        body["function_mode"] = "first_last_frames"
-
+            frame_images.append(args.first_frame)
+    
     if args.end_frame:
         if os.path.isfile(args.end_frame):
-            image_urls.append(resolve_file(client, args.end_frame, args.quiet))
+            frame_images.append(resolve_file(client, args.end_frame, args.quiet))
         else:
-            image_urls.append(args.end_frame)
+            frame_images.append(args.end_frame)
+    
+    # Mode selection logic
+    has_ref_images = len(all_images) > 0
+    has_frames = len(frame_images) > 0
+    total_images = len(all_images) + len(frame_images)
+    
+    # Determine function_mode based on user intent and image count
+    if has_ref_images:
+        # Using ref_images - determine mode based on model capability and image count
+        # Check if model supports single_image mode
+        registry = MODEL_REGISTRY.get(args.type, {})
+        model_supports_single = False
+        if args.model in registry:
+            supported_modes = registry[args.model].get("inputMode", [])
+            if isinstance(supported_modes, str):
+                supported_modes = [supported_modes]
+            model_supports_single = "single_image" in supported_modes
+        
+        if len(all_images) == 1 and model_supports_single:
+            # Single image + model supports single mode -> single_image mode
+            body["function_mode"] = "single_image"
+            body["image_url"] = all_images
+            if not args.quiet:
+                print(f"Using single_image mode with 1 reference image", file=sys.stderr)
+        else:
+            # 2+ images OR model doesn't support single mode -> omni_reference mode
+            body["function_mode"] = "omni_reference"
+            body["image_url"] = all_images
+            if not args.quiet:
+                print(f"Using omni_reference mode with {len(all_images)} reference image(s)", file=sys.stderr)
+    elif has_frames:
+        # Using first/end frames -> first_last_frames mode
+        body["function_mode"] = "first_last_frames"
+        body["image_url"] = frame_images
+        if not args.quiet:
+            print(f"Using first_last_frames mode with {len(frame_images)} frame(s)", file=sys.stderr)
+
     else:
-        image_urls.append("")
-
-    if image_urls:
-        body["image_url"] = image_urls
-
-    if args.ref_images:
-        body["image_url"] = [ resolve_file(client, ref, args.quiet) for ref in args.ref_images ]
-        body["function_mode"] = "omni_reference"
+        # No images provided - should not happen due to validation
+        body["function_mode"] = "first_last_frames"
+        body["image_url"] = []
 
     if args.prompt:
         body["prompt"] = args.prompt
@@ -486,7 +498,10 @@ def build_i2v_body(args, client: ChatArtClient) -> dict:
     if args.model in registry:
         spec = registry[args.model]
         if args.resolution and spec["resolution"] is not None:
-            body["quality"] = str(args.resolution) + "p"
+            if args.resolution == 2160:
+                body["quality"] = "4k"
+            else:
+                body["quality"] = str(args.resolution) + "p"
 
         if args.aspect_ratio and spec["aspectRatio"] is not None:
             body["ratio"] = args.aspect_ratio
@@ -504,7 +519,7 @@ def build_t2v_body(args) -> dict:
     """Build request body for Text-to-Video."""
     body = {
         "video_id": "101",
-        "sound": 0,
+        "sound": 1,
         "function_mode": "single_image",
         "image_url":[],
         "prompt": args.prompt,
@@ -514,11 +529,17 @@ def build_t2v_body(args) -> dict:
         body["gpt_type"] = get_model_id_by_name(args.model)
         body["original_model"] = get_model_id_by_name(args.model)
 
+    if body["original_model"] is None:
+        raise ValueError(f"model name err")
+
     registry = MODEL_REGISTRY.get(args.type, {})
     if args.model in registry:
         spec = registry[args.model]
         if args.resolution and spec["resolution"] is not None:
-            body["quality"] = str(args.resolution) + "p"
+            if args.resolution == 2160:
+                body["quality"] = "4k"
+            else:
+                body["quality"] = str(args.resolution) + "p"
 
         if args.aspect_ratio and spec["aspectRatio"] is not None:
             body["ratio"] = args.aspect_ratio
@@ -531,6 +552,66 @@ def build_t2v_body(args) -> dict:
     
     return body
 
+def build_omni_body(args, client: ChatArtClient) -> dict:
+    """Build request body for Omni Reference mode (1-9 images)."""
+    
+    # Collect all images from --ref-images
+    all_images = []
+    if args.ref_images:
+        for ref in args.ref_images:
+            if os.path.isfile(ref):
+                all_images.append(resolve_file(client, ref, args.quiet))
+            else:
+                all_images.append(ref)
+    
+    # Determine function_mode based on image count and model capability
+    registry = MODEL_REGISTRY.get(args.type, {})
+    model_supports_single = False
+    if args.model in registry:
+        supported_modes = registry[args.model].get("inputMode", [])
+        if isinstance(supported_modes, str):
+            supported_modes = [supported_modes]
+        model_supports_single = "single_image" in supported_modes
+    
+    if len(all_images) == 1 and model_supports_single:
+        function_mode = "single_image"
+    else:
+        function_mode = "omni_reference"
+    
+    body = {
+        "video_id": "102",
+        "sound": False,
+        "function_mode": function_mode,
+        "image_url": all_images,
+    }
+    
+    if args.model:
+        body["original_model"] = get_model_id_by_name(args.model)
+        body["gpt_type"] = get_model_id_by_name(args.model)
+
+    if body["original_model"] is None:
+        raise ValueError(f"model name err")
+
+    if args.prompt:
+        body["prompt"] = args.prompt
+
+    registry = MODEL_REGISTRY.get(args.type, {})
+    if args.model in registry:
+        spec = registry[args.model]
+        if args.resolution and spec["resolution"] is not None:
+            body["quality"] = str(args.resolution) + "p"
+
+        if args.aspect_ratio and spec["aspectRatio"] is not None:
+            body["ratio"] = args.aspect_ratio
+
+    if args.duration:
+        body["duration"] = str(args.duration)
+
+
+    # 打印body
+    # print(f"body: {json_mod.dumps(body, ensure_ascii=False)}", file=sys.stderr)
+    
+    return body
 def build_body(args, client: ChatArtClient) -> dict:
     """Dispatch to the type-specific body builder, with model constraint checks."""
     if args.model:
@@ -545,6 +626,8 @@ def build_body(args, client: ChatArtClient) -> dict:
         return build_i2v_body(args, client)
     elif args.type == "t2v":
         return build_t2v_body(args)
+    elif args.type == "omni":
+        return build_omni_body(args, client)
     elif args.type == "extend":
         return build_extend_body(args, client)
     #elif args.type == "anim":
@@ -554,11 +637,8 @@ def build_body(args, client: ChatArtClient) -> dict:
 
 def do_submit(client: ChatArtClient, task_type: str, body: dict, quiet: bool) -> str:
     """POST submit task, return taskId."""
-    print("do_submit====1=====",task_type)
-    print("do_submit====2=====", body)
-    print("do_submit====3=====", quiet)
     path = ENDPOINTS[task_type]["submit"]
-    label = {"i2v": "image-to-video", "t2v": "text-to-video", "extend": "video-extension", "anim": "animation"}
+    label = {"i2v": "image-to-video", "t2v": "text-to-video", "omni": "omni-reference", "extend": "video-extension"}
     if not quiet:
         print(f"Submitting {label[task_type]} task...", file=sys.stderr)
     result = client.post(path, json=body)
@@ -642,15 +722,15 @@ def print_result(result: dict, args, client: ChatArtClient) -> None:
 def add_common_args(p):
     """Add arguments shared by all task types."""
     p.add_argument("--type", required=True, choices=TASK_TYPES,
-                   help="Task type: i2v (image-to-video), t2v (text-to-video), extend (video extension), anim (animation)")
+                   help="Task type: i2v (image-to-video), t2v (text-to-video), extend (video extension)")
     p.add_argument("--model", default=None,
                    help="Model name/ID (required for t2v and i2v; optional for others). See 'list-models' command for supported models. default value: None ")
     p.add_argument("--prompt", default=None,
                    help="Text prompt (required for t2v and omni)")
     p.add_argument("--aspect-ratio", default=None,
                    help='Aspect ratio, e.g. "16:9", "9:16", "1:1", "4:3", "3:4" ')
-    p.add_argument("--resolution", type=int, default=720, choices=[360, 480, 540, 720, 1080],
-                   help="Resolution (model-dependent): 360, 480, 540, 720, 1080")
+    p.add_argument("--resolution", type=int, default=720, choices=[360, 480, 540, 720, 1080, 2160],
+                   help="Resolution (model-dependent): 360, 480, 540, 720, 1080, 2160")
     p.add_argument("--duration", type=int, default=None,
                    help="Video duration in seconds")
     p.add_argument("--count", type=int, default=1,
@@ -715,14 +795,63 @@ def validate_args(args, parser):
             parser.error("--model is required for text-to-video (t2v)")
         if not args.prompt:
             parser.error("--prompt is required for text-to-video (t2v)")
-    # elif args.type == "omni":
-    #     if not args.model:
-    #         parser.error("--model is required for omni reference")
-    #     if not args.prompt:
-    #         parser.error("--prompt is required for omni reference")
+    elif args.type == "omni":
+        if not args.model:
+            parser.error("--model is required for omni reference")
+        if not args.prompt:
+            parser.error("--prompt is required for omni reference")
+        if not args.ref_images:
+            parser.error("--ref-images is required for omni reference (1-9 images)")
     elif args.type == "i2v":
         if not args.first_frame and not args.ref_images:
             parser.error("--first-frame or --ref-images is required for image-to-video (i2v)")
+
+        # Validate inputMode compatibility
+        if args.model:
+            registry = MODEL_REGISTRY.get(args.type, {})
+            if args.model in registry:
+                model_info = registry[args.model]
+                supported_modes = model_info.get("inputMode", ["first_end"])
+                
+                # Ensure supported_modes is a list (for backward compatibility)
+                if isinstance(supported_modes, str):
+                    supported_modes = [supported_modes]
+                
+                # Count images
+                ref_count = len(args.ref_images) if args.ref_images else 0
+                frame_count = (1 if args.first_frame else 0) + (1 if args.end_frame else 0)
+                total_images = ref_count + frame_count
+                
+                # Determine which mode the user is trying to use
+                using_first_end = frame_count > 0
+                using_omni = ref_count > 0
+                
+                # Validate based on the mode being used
+                if using_first_end:
+                    # User wants first/last frame mode
+                    if "first_last_frames" not in supported_modes and "single_image" not in supported_modes:
+                        print(f"Error: Model '{args.model}' does not support first/last frame mode.", file=sys.stderr)
+                        print(f"Supported modes: {', '.join(supported_modes)}", file=sys.stderr)
+                        sys.exit(1)
+                    if total_images > 2:
+                        print(f"Error: First/last frame mode supports max 2 images.", file=sys.stderr)
+                        print(f"You provided {total_images} image(s).", file=sys.stderr)
+                        if total_images >= 3:
+                            print(f"For {total_images} images, please use --type omni with a model that supports omni_reference mode.", file=sys.stderr)
+                        sys.exit(1)
+                
+                elif using_omni:
+                    # User wants omni reference mode
+                    if "omni_reference" not in supported_modes:
+                        print(f"Error: Model '{args.model}' does not support omni reference mode.", file=sys.stderr)
+                        print(f"Supported modes: {', '.join(supported_modes)}", file=sys.stderr)
+                        if total_images >= 3:
+                            print(f"For {total_images} images, please use Seedance 2.0 or HappyHorse 1.0.", file=sys.stderr)
+                        sys.exit(1)
+                
+                else:
+                    # No images provided - should have been caught earlier
+                    pass
     elif args.type == "extend":
         if not args.input_video:
             parser.error("--input_video is required for video extension")
@@ -747,17 +876,30 @@ def cmd_list_models(args, parser):
         print(json_mod.dumps(registry, indent=2, ensure_ascii=False))
         return
 
-    type_label = {"i2v": "Image-to-Video", "t2v": "Text-to-Video", "extend": "Video Extension",
-                  "anim": "Animation"}
+    type_label = {"i2v": "Image-to-Video", "t2v": "Text-to-Video", "omni": "Omni-Reference", "extend": "Video Extension"}
     print(f"\n{type_label.get(task_type, task_type)} — Supported Models\n")
-    print(f"{'Model':<25} {'Aspect Ratio':<35} {'Resolution':<22} {'Duration':<32} {'Audio'}")
-    print("-" * 120)
+    print(f"{'Model':<25} {'Input Mode':<18} {'Aspect Ratio':<35} {'Resolution':<22} {'Duration':<32} {'Audio'}")
+    print("-" * 145)
     for name, spec in registry.items():
         ar = ", ".join(spec["aspectRatio"]) if spec["aspectRatio"] else "by image" if task_type == "i2v" else "N/A"
         res = ", ".join(str(r) for r in spec["resolution"]) if spec["resolution"] else "N/A"
         dur = _parse_duration_spec(spec["duration"])
         audio = "Yes" if spec.get("nativeAudio") else "No"
-        print(f"{name:<25} {ar:<35} {res:<22} {dur:<32} {audio}")
+        input_mode = spec.get("inputMode", "N/A")
+        # Map inputMode to user-friendly labels (handle both list and string)
+        mode_labels = {
+            "single": "Single (1)",
+            "first_end": "First/End (1-2)",
+            "omni": "Omni (1-9)"
+        }
+        
+        # Handle list of modes
+        if isinstance(input_mode, list):
+            mode_label = ", ".join([mode_labels.get(m, m) for m in input_mode])
+        else:
+            mode_label = mode_labels.get(input_mode, input_mode)
+        
+        print(f"{name:<25} {mode_label:<18} {ar:<35} {res:<22} {dur:<32} {audio}")
     print()
 
 
@@ -784,7 +926,7 @@ def cmd_estimate_cost(args, parser):
 
 def cmd_run(args, parser):
     """Submit task then poll until done — full flow (default)."""
-    print("cmd_run Submitting task...")
+    #print("cmd_run Submitting task...")
     validate_args(args, parser)
     client = ChatArtClient()
     body = build_body(args, client)
@@ -802,10 +944,8 @@ def cmd_run(args, parser):
 
 def cmd_submit(args, parser):
     """Submit task only — print taskId and exit immediately."""
-    print("Submitting task...")
-    print("args=================",args)
+    #print("Submitting task...")
     validate_args(args, parser)
-    print("body=================")
     client = ChatArtClient()
     body = build_body(args, client)
     task_id = do_submit(client, args.type, body, args.quiet)
@@ -842,7 +982,7 @@ def cmd_query(args, parser):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ChatArt Video Generation — i2v / t2v / extend / anim.",
+        description="ChatArt Video Generation — i2v / t2v /omni / extend.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 AGENT WORKFLOW RULES:
@@ -929,12 +1069,12 @@ Examples:
     p_cost.add_argument("--model", required=True, help="Model display name")
     p_cost.add_argument("--resolution", type=int, required=True, default="720", help="Resolution")
     p_cost.add_argument("--duration", type=int, required=True, help="Duration in seconds")
-    p_cost.add_argument("--sound", default=None, choices=["true", "false"], help="Sound true/false")
+    p_cost.add_argument("--sound", default="true", choices=["true", "false"], help="Sound true/false (default: true)")
     p_cost.add_argument("--count", type=int, required=True, default=1, help="generatingCount (1-4)")
     p_cost.add_argument("--json", action="store_true", help="Output as JSON")
-    print("Parsing arguments...1")
+
     args = parser.parse_args()
-    print("Parsing arguments...2")
+
     if args.subcommand == "run":
         cmd_run(args, p_run)
     elif args.subcommand == "submit":

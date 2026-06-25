@@ -181,7 +181,18 @@ def _poll_for_approval(device_code: str, token_endpoint: str, interval: int) -> 
                 respo_data = result.get("data", {})
                 code = result.get("code", "")
                 if code != 200:
-                    continue
+                    if code in ["401", "10007", "10010", "10001", "10048"]:
+                        print(
+                            "\nSession expired. Run `auth.py login` to start a new session.",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            f"Error: {result.get('message', 'Unknown error')}",
+                            file=sys.stderr,
+                        )
+                    PENDING_FILE.unlink(missing_ok=True)
+                    sys.exit(1)
                 if code == 200:
                     _save_credentials(respo_data)
                     PENDING_FILE.unlink(missing_ok=True)

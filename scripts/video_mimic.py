@@ -188,9 +188,9 @@ def build_full_scene_body(args, client: ChatArtClient) -> dict:
         body["gpt_type"] = get_model_id_by_name(args.model)
         body["original_model"] = get_model_id_by_name(args.model)
     if args.input_image:
-        body["img_url"].append(resolve_file(client, args.input_image, args.quiet))
+        body["image_url"].append(resolve_file(client, args.input_image, args.quiet))
     if args.input_video:
-        body["img_url"].append(resolve_file(client, args.input_video, args.quiet))
+        body["image_url"].append(resolve_file(client, args.input_video, args.quiet))
         body["duration"] = int(get_video_duration(args.input_video, args.quiet) / 1000)
     if args.resolution:
         body["quality"] = str(args.resolution) + "p"
@@ -209,9 +209,9 @@ def build_body_only_body(args, client: ChatArtClient) -> dict:
         body["original_model"] = get_model_id_by_name(args.model)
 
     if args.input_image:
-        body["img_url"].append(resolve_file(client, args.input_image, args.quiet))
+        body["image_url"].append(resolve_file(client, args.input_image, args.quiet))
     if args.input_video:
-        body["img_url"].append(resolve_file(client, args.input_video, args.quiet))
+        body["image_url"].append(resolve_file(client, args.input_video, args.quiet))
         body["duration"] = int(get_video_duration(args.input_video, args.quiet) / 1000)
     if args.resolution:
         body["quality"] = str(args.resolution) + "p"
@@ -284,7 +284,7 @@ def print_result(result: dict, args, client: ChatArtClient) -> None:
     status = TaskStatus(result.get("status"))
 
 
-    video_url = result.get("video_url", "")
+    video_url = result.get("message", {}).get("url")
     if status == TaskStatus.COMPLETED:
         if args.output_dir and video_url:
             os.makedirs(args.output_dir, exist_ok=True)
@@ -300,7 +300,7 @@ def print_result(result: dict, args, client: ChatArtClient) -> None:
         cost = result.get("cost_credit", "N/A")
         print(f"status: {status.label}  cost: {cost} credits")
         
-        video_url = result.get("video_url", "")
+        video_url = result.get("message", {}).get("url")
         error_msg = result.get("error", "") or result.get("real_error", "")
         
         if video_url and status == TaskStatus.COMPLETED:

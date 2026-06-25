@@ -1,6 +1,7 @@
 ---
 name: chatart-skill
-description: "Generate, Edit, Collaborate. Access all mainstream AI models in one toolkit. Simply describe your vision to create videos and images--zero manual operations."
+description: "Use when user wants to generate videos, create images from text prompts, edit existing images with AI, or replace characters in videos. Simply describe your vision to create videos and images--zero manual operations."
+agent_created: false
 metadata:
   tags: chatart, video, image, api, i2v, t2v, text2image, image_edit
   requires:
@@ -49,8 +50,8 @@ metadata:
 | Task Type | Model | Estimated Time                      |
 |-----------|-------|-------------------------------------|
 | Video | Standard / Fast (Seedance 2.0) | ~5–10 min                           |
-| Video | All other video models (Kling, Sora, Veo, Vidu, etc.) | ~3–5 min                            |
-| Image | image models (Nano Banana, Seedream etc.) | ~30s–1 min                          |
+| Video | All other video models (Kling, HappyHorse etc.) | ~3–5 min                            |
+| Image | image models (Nano Banana 2, Seedream etc.) | ~30s–1 min                          |
 | Character Replace | `Kling V3.0`, `Seedance 2.0`, `Wan 2.2`   | ~3–5 min                            |
 
 Example messages after submitting:
@@ -72,7 +73,7 @@ Replace `<LOGIN_URL>` with the actual link. Follow the user's language (Chinese 
 
 🎬 视频生成
 文字转视频、图片转视频、参考视频生成，自动配音配乐。
-视频模型：Seedance 2.0 · Kling 3 · Veo 3.1 · Vidu Q3 · wan2.7
+视频模型：Seedance 2.0 · Seedance 2.0 Fast · Seedance 2.0 Mini · Seedance 1.5 Pro · Kling 3 · HappyHorse 1.0 · PixVerse V6
 
 🖼️ AI 图片生成与编辑
 文字生图、AI 修图、风格转换，最高支持 4K。
@@ -80,6 +81,7 @@ Replace `<LOGIN_URL>` with the actual link. Follow the user's language (Chinese 
 
 ✂️ 角色替换(动作模仿)
 上传一张角色照片 + 动作视频，视频中的人物替换成图片中的角色或者照片中的人物会模仿视频中的动作
+视频模型: Kling V3.0 · Wan 2.2
 
 登录完成后回我一句"好了"，我马上继续。
 ```
@@ -95,7 +97,7 @@ Copy the link below into your browser to sign in. After signing in, the followin
 
 🎬 Video Generation
 Text-to-video, image-to-video, reference-based generation with auto sound & music.
-Models: Seedance 2.0 · Seedance 2.0 Fast · Kling V3.0 · HappyHorse1.0 · PixVerse V6
+Models: Seedance 2.0 · Seedance 2.0 Fast · Seedance 2.0 Mini · Seedance 1.5 Pro · Kling V3.0 · HappyHorse1.0 · PixVerse V6
 
 🖼️ AI Image Generation & Editing
 Text-to-image, AI retouching, style transfer — up to 4K resolution.
@@ -188,7 +190,7 @@ Decision tree:
 
 Use `list-models` to ensure model, aspect ratio, resolution, and duration are compatible:
 ```bash
-python scripts/video_gen.py list-models --type <t2v|i2v|extend>
+python scripts/video_gen.py list-models --type <t2v|i2v|omni|extend>
 ```
 
 ## Modules
@@ -196,13 +198,114 @@ python scripts/video_gen.py list-models --type <t2v|i2v|extend>
 | Module | Script | Reference | Description                                                                           |
 |--------|--------|-----------|---------------------------------------------------------------------------------------|
 | Auth | `scripts/auth.py` | [auth.md](references/auth.md) | OAuth 2.0 Device Flow — generate login link, wait for authorization, save credentials; supports account switching via `accountswitch` command |           |
-| Video Gen | `scripts/video_gen.py` | [video_gen.md](references/video_gen.md) | Image-to-video, text-to-video, video extension              |
+| Video Gen | `scripts/video_gen.py` | [video_gen.md](references/video_gen.md) | Image-to-video (2 modes), text-to-video, video extension              |
 | AI Image | `scripts/ai_image.py` | [ai_image.md](references/ai_image.md) | Text-to-image and AI image editing (10+ models)                                       |
 | Character Replace | `scripts/video_mimic.py` | [video_mimic.md](references/video_mimic.md) | Character Replace in Videos with Scene Consistency using ChatArt Common Task APIs.   |
 | User | `scripts/user.py` | [user.md](references/user.md) | Credit balance and usage history                                                      |
 
 > **Read individual reference docs for usage, options, and code examples.**
 > Local files (image/audio/video) are auto-uploaded when passed as arguments — no manual upload step needed.
+
+### Image-to-Video Modes
+
+The i2v (Image-to-Video) task supports two modes:
+
+**1. Omni Reference Mode (Recommended, Default)**
+- **When to use**: User provides 1-2 reference images via `--ref-images` WITHOUT explicit "first/last frame" keywords
+- **Parameter**: `--ref-images <image1> [image2]`
+- **Capabilities**: Supports up to 2 reference images for i2v type, better creative control than first_last_frames mode
+- **Example**: 
+  ```bash
+  python video_gen.py run --type i2v --model "Seedance 2.0" \
+      --ref-images photo1.jpg photo2.jpg \
+      --prompt "Animate these characters dancing"
+  ```
+
+**2. First-Last Frame Mode**
+- **When to use**: User explicitly mentions "首尾帧", "first last frame", "start and end" in prompt, OR you want precise control over start/end points
+- **Parameters**: `--first-frame <image>` and/or `--end-frame <image>` (1-2 images)
+- **Capabilities**: Precise control over video beginning and ending, smooth transitions
+- **Example**:
+  ```bash
+  python video_gen.py run --type i2v --model "Seedance 2.0" \
+      --first-frame start.jpg --end-frame end.jpg \
+      --prompt "Smooth transition from start to end"
+  ```
+
+**3. Omni Type (--type omni) — MANDATORY for 3+ Images**
+- **When to use**: User provides **3 or more images** (CRITICAL RULE)
+- **Type**: `--type omni` (NOT `--type i2v`)
+- **Parameter**: `--ref-images <image1> <image2> <image3> ... [up to 9 images]`
+- **Capabilities**: Flexible multi-image composition, character consistency, complex scenes
+- **Supported models**: Seedance 2.0, Seedance 2.0 Fast, Seedance 2.0 Mini, HappyHorse 1.0
+- **Example**:
+  ```bash
+  python video_gen.py run --type omni --model "Seedance 2.0" \
+      --ref-images char1.jpg char2.jpg char3.jpg \
+      --prompt "Create a video with these characters interacting"
+  ```
+
+**Mode Selection Rules:**
+- **3+ images → MUST use `--type omni --ref-images`** (CRITICAL)
+- 1-2 images with `--ref-images` → Use `--type i2v --ref-images`
+- 1-2 images with `--first-frame`/`--end-frame`:
+  - Check prompt for keywords: "首尾帧", "first last", "start end", "开头结尾" → Use `--type i2v --first-frame/--end-frame`
+  - Otherwise → Default to `--type i2v --ref-images` (better quality)
+- Never assume first_last_frames mode unless explicitly requested
+
+### Image Edit Modes
+
+The image_edit task also supports two reference modes:
+
+**1. Multi-Image Reference Mode (Full Function, Recommended)**
+- **When to use**: User provides 1-14 reference images for complex editing tasks
+- **Parameter**: `--input-images <image1> [image2] ... [image14]`
+- **Capabilities**: Supports up to 14 reference images, enables complex compositions like merging multiple people, style transfer, background replacement with multiple references
+- **API Structure**: Uses `reference_image` array in request body
+- **Example**:
+  ```bash
+  python ai_image.py run --type image_edit --model "Nano Banana" \
+      --input-images person1.jpg person2.jpg \
+      --prompt "生成两人的自拍合照，背景是长城，表情自然，一起比心" \
+      --aspect-ratio "16:9"
+  ```
+  
+  **Request Body Example**:
+  ```json
+  {
+    "description": "修改图片，生成图1和图2的自拍合照，背景是长城，两人表情自然，举止亲密, 他们两个一起比心手势",
+    "style": 0,
+    "picture_scale": 3,
+    "gpt_type": "nano-banana-2",
+    "picture_counts": 1,
+    "reference_image": [
+      "https://files.chatartpro.com/chat-web-image/image_home/chat/image-editor.png",
+      "https://files.chatartpro.com/chat-web-image/image_home/chat/chat_demo/mask.jpg"
+    ],
+    "content": {"text": "", "site_url": ""},
+    "gen_content": "",
+    "scene_id": 13
+  }
+  ```
+
+**2. Single Image Edit Mode**
+- **When to use**: User provides only 1 image for simple edits (background change, style transfer, object removal)
+- **Parameter**: `--input-images <single_image>`
+- **Capabilities**: Simple modifications to a single image
+- **Example**:
+  ```bash
+  python ai_image.py run --type image_edit --model "Nano Banana" \
+      --input-images photo.jpg \
+      --prompt "将背景改为海滩" \
+      --aspect-ratio "16:9"
+  ```
+
+**Mode Selection Guide for Image Edit:**
+- 1 image provided → Use `--input-images` (single image mode)
+- 2-14 images provided → Use `--input-images img1 img2 ...` (multi-image reference mode)
+- The script automatically handles both cases — no special flag needed
+- For complex compositions (merging people, creating group photos), always use multi-image mode
+
 
 ---
 
@@ -262,16 +365,79 @@ What does the user need?
 
 | User says...                                              | Script & Type                                                            |
 |-----------------------------------------------------------|--------------------------------------------------------------------------|
-| "Animate this image / image-to-video"                     | `video_gen.py --type i2v` (pass local image path)                        |
+| "Animate this image / image-to-video"                     | `video_gen.py --type i2v --ref-images <image>` (omni mode, default)      |
+| "用3+张图生成视频 / 3+ images to video"                   | `video_gen.py --type omni --ref-images <img1> <img2> <img3> ...` (MANDATORY) |
+| "用首尾帧生成视频 / use first last frame"                 | `video_gen.py --type i2v --first-frame <img> --end-frame <img>`          |
 | "Generate a video about..."                               | `video_gen.py --type t2v`                                                |
 | "Extend the original videoo"                              | `video_gen.py --type extend`                                             |
 | "Generate an image / text-to-image"                       | `ai_image.py --type text2image`                                          |
-| "Modify this image / change background"                   | `ai_image.py --type image_edit`                                          |
+| "Modify this image / change background / Merge these photos"                   | `ai_image.py --type image_edit --input-images <img1> [img2] ...`                                          |
+| "生成两人的合照 / Create group photo"                     | `ai_image.py --type image_edit --input-images person1.jpg person2.jpg`   |
 | "Character Replace / Action imitation"                    | `video_mimic.py`                                                         |
 | "View my creation history / check what was generated"     | `user.py logs --type image` or `user.py logs --type video`               |
 | "Check how many credits I have left"                      | `user.py credit`                                                         |
 
+**Image-to-Video Mode Selection Guide:**
+
+When user wants to animate images into video:
+
+1. **Count the images (CRITICAL RULE):**
+   - **3+ images → MUST use `--type omni --ref-images`** — This is mandatory for multi-image scenarios
+   - 2 images with "首尾帧/first last" keywords → Use `--type i2v --first-frame/--end-frame`
+   - 1-2 images without keywords → Use `--type i2v --ref-images` (default omni mode)
+
+2. **Check user's intent:**
+   - "让这张图动起来" → `video_gen.py --type i2v --ref-images photo.jpg`
+   - "用3+张图生成视频" → `video_gen.py --type omni --ref-images img1.jpg img2.jpg img3.jpg`
+   - "用首尾帧生成过渡视频" → `video_gen.py --type i2v --first-frame start.jpg --end-frame end.jpg`
+   - "从这张图开始，到那张图结束" → `video_gen.py --type i2v --first-frame start.jpg --end-frame end.jpg`
+
+3. **Type selection rules:**
+   - `--type i2v`: For single image or first/last frame (1-2 images)
+   - `--type omni`: For multi-image composition (3+ images, MANDATORY)
+   - When in doubt with 1-2 images, use `--type i2v --ref-images`
+
+**Image Edit Mode Selection Guide:**
+
+When user wants to edit or modify images:
+
+1. **Count the reference images:**
+   - 1 image → `--input-images photo.jpg` (simple edit)
+   - 2-14 images → `--input-images img1.jpg img2.jpg ...` (complex composition)
+
+2. **Common scenarios:**
+   - "换背景" → `--input-images photo.jpg --prompt "将背景改为海滩"`
+   - "生成两人合照" → `--input-images person1.jpg person2.jpg --prompt "生成两人的自拍合照"`
+   - "合并多张照片" → `--input-images img1.jpg img2.jpg img3.jpg --prompt "将这些元素合成为一张图"`
+   - "风格迁移" → `--input-images photo.jpg style.jpg --prompt "应用style.jpg的艺术风格"`
+
+3. **Best practices:**
+   - Always use `--input-images` for all image edit tasks (supports 1-14 images)
+   - Provide detailed prompts describing the desired outcome
+   - For multi-person compositions, specify poses, expressions, and background
+   - Default model: Nano Banana (best quality for image editing)
+
 > **Video model selection** — see [references/video_gen.md](references/video_gen.md) § Model Recommendation.
+
+> ⚠️ **CRITICAL: Model Input Mode Compatibility**
+> 
+> Different models support different image input modes. You MUST verify compatibility before submitting:
+> 
+> | Model | Single Image (`single_image`) | First/End Frame (`first_last_frames`) | Omni Reference (`omni_reference`) | Notes |
+> |-------|:-----------------------------:|:-------------------------------------:|:---------------------------------:|-------|
+> | **Seedance 2.0** | ❌ | ✅ | ✅ | Even 1 image uses `omni_reference` |
+> | **Seedance 2.0 Fast** | ❌ | ✅ | ✅ | Even 1 image uses `omni_reference` |
+> | **Seedance 2.0 Mini** | ❌ | ✅ | ✅ | Even 1 image uses `omni_reference` |
+> | **Seedance 1.5 Pro** | ✅ | ❌ | ❌ | Only supports single image |
+> | **HappyHorse 1.0** | ❌* | ❌ | ✅ | *Must use `--type omni` |
+> | **Kling V3** | ✅ | ✅ | ❌ | Best for single/first-end frames |
+> 
+> **Rules:**
+> - 1 image with `--type i2v` → Use Kling V3 or Seedance 1.5 Pro
+> - 1 image with `--type omni` → Use HappyHorse 1.0, Seedance 2.0, Seedance 2.0 Fast, Seedance 2.0 Mini
+> - 2 images → Seedance 2.0/Fast or Kling V3
+> - 3+ images → MUST use `--type omni` with Seedance 2.0, Seedance 2.0 Fast, Seedance 2.0 Mini or HappyHorse 1.0
+> - Script will validate and reject incompatible combinations
 
 > **Image model tip:** For all image tasks, default to **Nano Banana** — strongest all-round model with best quality, 7 aspect ratios, and 14 reference images for editing. See [references/ai_image.md](references/ai_image.md) § Model Recommendation.
 
@@ -283,7 +449,7 @@ What does the user need?
 
 1. **Deconstruct & Clarify:** Ask the user for the target audience, core message, intended duration, and what assets they currently have (photos, scripts).
 2. **Determine the Route:**
-   - *Has a product/reference photo* → Use `video_gen --type i2v` or `anim`.
+   - *Has a product/reference photo* → Use `video_gen --type i2v`.
    - *No assets, purely visual concept* → Use `video_gen --type t2v`.
 3. **Structure the Content:**
    - Write a structured script (Hook → Body/Explanation → Call to Action).
@@ -343,7 +509,7 @@ Reply "confirm" to proceed, or let me know what you'd like to change.
 
 | Module | Type | Optional Models | Current Selection (Recommended) |
 |--------|------|-----------------|---------------|
-| video_gen | i2v / t2v | Seedance 2.0 / Seedance 2.0 Fast / Seedance 1.5 Pro / Kling V3.0 / HappyHorse1.0 | Seedance 2.0 |
+| video_gen | i2v / t2v | Seedance 2.0 / Seedance 2.0 Fast / Seedance 2.0 Mini / Seedance 1.5 Pro / Kling V3.0 / HappyHorse1.0 | Seedance 2.0 |
 | video_gen | extend | PixVerse V6 / Seedance 2.0 / Seedance 2.0 Fast / Kling V3.0 | PixVerse V6 |
 | video_mimic | Full_Scene | Kling V3.0 / Wan 2.2 | Kling V3.0 |
 | video_mimic | Body_Only | Wan 2.2 | Wan 2.2 |
@@ -370,14 +536,14 @@ Reply "confirm" to proceed, or let me know what you'd like to change.
 
 #### Video Generation (video_gen.py)
 
-**t2v / i2v — Multiple models available：**
+**t2v / i2v / omni — Multiple models available：**
 
 ```
 🎬 视频生成确认
 
 • 类型：文生视频（t2v）
 • 模型：Seedance 2.0（推荐）✓
-• 可选模型：Seedance 2.0 Fast / Seedance 1.5 Pro / Kling V3.0 / HappyHorse1.0
+• 可选模型：Seedance 2.0 Fast / Seedance 2.0 Mini / Seedance 1.5 Pro / Kling V3.0 / HappyHorse1.0
 • 分辨率：1080p
 • 时长：5秒
 • 画幅：16:9
@@ -387,14 +553,14 @@ Reply "confirm" to proceed, or let me know what you'd like to change.
 确认无误请回复"确认"，或告诉我需要修改的参数。
 ```
 
-**English t2v / i2v — Multiple models available:**
+**English t2v / i2v / omni — Multiple models available:**
 
 ```
 🎬 Video Generation — Confirm
 
 • Type: Text-to-Video (t2v)
 • Model: Seedance 2.0 (Recommended) ✓
-• Available models: Seedance 2.0 Fast / Seedance 1.5 Pro / Kling V3.0 / HappyHorse1.0
+• Available models: Seedance 2.0 Fast / Seedance 2.0 Mini / Seedance 1.5 Pro / Kling V3.0 / HappyHorse1.0
 • Resolution: 1080p
 • Duration: 5s
 • Aspect ratio: 16:9
@@ -499,6 +665,7 @@ Reply "confirm" to proceed, or let me know what you'd like to change.
 • 模型：Nano Banana 2（推荐）✓
 • 可选模型：Gpt Image 2 / Nano Banana Pro / Seedream 5.0
 • 分辨率：2K
+• 品质：<Gpt Image 2：低 / 中 / 高（默认低）；其他模型：无>
 • 画幅：16:9
 • 预估消耗：XX credits
 
@@ -506,18 +673,22 @@ Reply "confirm" to proceed, or let me know what you'd like to change.
 确认无误请回复"确认"，或告诉我需要修改的参数。
 ```
 
-**english text2image / image_edit — Multiple models available：**
+**English text2image / image_edit — Multiple models available:**
 
 ```
 🖼️ AI Image Generation Confirmation
+
 • Type: Text-to-Image (text2image) / Image Editing (image_edit)
 • Model: Nano Banana 2 (Recommended) ✓
-• Optional Models: Gpt Image 2 / Nano Banana Pro / Seedream 5.0
+• Available models: Gpt Image 2 / Nano Banana Pro / Seedream 5.0
 • Resolution: 2K
+• Quality: <Gpt Image 2: Low / Medium / High (default: Low); other models: N/A>
 • Aspect Ratio: 16:9
-• Estimated Cost: XX credits
-If you want to switch to another model, just let me know your preferred option.
-Reply "Confirm" if all settings are correct, or specify which parameters you need to adjust.
+• Estimated cost: XX credits
+
+To switch models, just tell me which one you'd prefer.
+Reply "confirm" to proceed, or let me know what you'd like to change.
+```
 ```
 
 ---

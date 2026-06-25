@@ -8,7 +8,7 @@ When errors occur, diagnose and act — never just show a raw error message to t
 |------|---------|--------|
 | `10058` | Insufficient diamonds (credits) | **User-friendly message:** "积分不足，无法生成。请访问 https://app.chatartpro.com/subscriptions 购买订阅以获取更多积分。" |
 | `30027` | Insufficient permissions | **User-friendly message:** "权限不足，无法使用此功能。请访问 https://app.chatartpro.com/subscriptions 购买订阅以解锁更多权益。" |
-| `4100` | Credit not enough | Tell user their balance is insufficient. Show current balance, suggest recharging at [litmedia.ai](https://www.litmedia.ai/dashboard/home). |
+| `4100` | Credit not enough | Tell user their balance is insufficient. Show current balance, suggest recharging at [chatartpro.com](https://chatartpro.com). |
 | `4007` | Exists unfinished task | A previous task is still running. Wait 30s and retry, or ask user if they want to cancel the previous task. |
 | `4000` / `4001` / `4003` | Parameter error | Check the model's supported parameters (aspect ratio, resolution, duration). Fix and retry. |
 | `5003` | Server busy | Wait 10–30s and retry. If persistent, suggest trying a different model. |
