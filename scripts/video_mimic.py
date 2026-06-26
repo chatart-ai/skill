@@ -246,7 +246,7 @@ def do_submit(client: ChatArtClient, task_type: str, body: dict, quiet: bool) ->
 def do_poll(client: ChatArtClient, task_id: str,
             timeout: float, interval: float, quiet: bool) -> dict:
     """Poll until status is terminal or timeout is exceeded."""
-    path = ENDPOINTS["query"]
+    path = ENDPOINTS["query"]  + f"?question_id={task_id}"
     if not quiet:
         print(
             f"Polling task {task_id} (timeout={timeout}s, interval={interval}s)...",
