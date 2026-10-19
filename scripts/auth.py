@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""ChatArt Device Authorization CLI (OAuth 2.0 Device Flow).
+"""LitMedia Device Authorization CLI (OAuth 2.0 Device Flow).
 
-Uses the remote ChatArt OAuth service — no local server required.
+Uses the remote LitMedia OAuth service — no local server required.
 
   python auth.py login   — Full flow: init → open browser → poll → save credentials
   python auth.py poll    — Resume polling a previously started login (recovery only)
@@ -24,19 +24,19 @@ import hashlib
 import platform
 from datetime import datetime, timezone
 from pathlib import Path
-from shared.client import ChatArtClient, ChatArtError, BASE_URL
+from shared.client import LitMediaClient, LitMediaError
 
 import requests
 
 OAUTH_BASE_URL = os.environ.get(
-    "CHATART_OAUTH_URL", "https://litvideo-api.litmedia.ai"
+    "LITMEDIA_OAUTH_URL", "https://litvideo-api.litmedia.ai"
 )
-# CLIENT_ID = os.environ.get("CHATART_CLIENT_ID", "chatart-12393716298443")
+# CLIENT_ID = os.environ.get("LITMEDIA_CLIENT_ID", "litmedia-12393716298443")
 
 DEFAULT_SCOPE = "read:profile read:billing read:apikey"
 
-CRED_FILE = Path.home() / ".ChatArt" / "credentials.json"
-PENDING_FILE = Path.home() / ".ChatArt" / "pending_device.json"
+CRED_FILE = Path.home() / ".LitMedia" / "credentials.json"
+PENDING_FILE = Path.home() / ".LitMedia" / "pending_device.json"
 LOGIN_TIMEOUT = 600  # 10 minutes, matching server-side expiry
 
 
@@ -87,18 +87,19 @@ def _get_pc_fingerprint() -> str:
     hash_object = hashlib.sha256(fingerprint_string.encode('utf-8'))
     fingerprint_hash = hash_object.hexdigest()
     
-    return f"pro-chatart-skill-{fingerprint_hash[:16]}"
+    return f"litmedia-skill-{fingerprint_hash[:16]}"
 
-CLIENT_ID = os.environ.get("CHATART_CLIENT_ID", _get_pc_fingerprint())
+CLIENT_ID = os.environ.get("LITMEDIA_CLIENT_ID", _get_pc_fingerprint())
 
 def _save_credentials(data: dict) -> None:
     """Persist user credentials returned by the OAuth APPROVED response."""
     CRED_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    api_key = data.get("api_key", "")
+    api_keys = data.get("api_keys", [])
+    api_key = api_keys[0] if api_keys else ""
 
     creds = {
-        "uid": data.get("member_id", ""),
+        "uid": data.get("uid", ""),
         "api_key": api_key,
         "email": data.get("email", ""),
         "name": data.get("name", ""),
@@ -107,8 +108,6 @@ def _save_credentials(data: dict) -> None:
         "charge_type": data.get("charge_type", ""),
         "remain_credit": data.get("remain_credit"),
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "token": data.get("token", ""),
-        "identity_id": data.get("identity_id", ""),
     }
 
     if data.get("access_token"):
@@ -129,6 +128,7 @@ def _load_credentials() -> dict | None:
 
 
 def _delete_credentials() -> bool:
+
     if CRED_FILE.exists():
         if _device_unint():
             CRED_FILE.unlink()
@@ -167,9 +167,9 @@ def _poll_for_approval(device_code: str, token_endpoint: str, interval: int) -> 
             try:
                 resp = requests.post(
                     token_endpoint,
-                    json={"identity_id": device_code},
-                    headers={"Content-Type": "application/json"},
-                    timeout=60,
+                    json={"token": device_code},
+                    headers={"Monimaster-Device-Type": "110"},
+                    timeout=10,
                 )
 
             except requests.RequestException:
@@ -178,22 +178,15 @@ def _poll_for_approval(device_code: str, token_endpoint: str, interval: int) -> 
             if resp.status_code == 200:
                 result = resp.json()
                 print(f"token_endpoint resp: {result}")
+
                 respo_data = result.get("data", {})
-                code = result.get("code", "")
-                if code != 200:
-                    if code in ["401", "10007", "10010", "10001", "10048"]:
-                        print(
-                            "\nSession expired. Run `auth.py login` to start a new session.",
-                            file=sys.stderr,
-                        )
-                    else:
-                        print(
-                            f"Error: {result.get('message', 'Unknown error')}",
-                            file=sys.stderr,
-                        )
-                    PENDING_FILE.unlink(missing_ok=True)
-                    sys.exit(1)
-                if code == 200:
+                status = respo_data.get("status", "")
+
+                if status in ("INITIATED", "PENDING"):
+                    poll_interval = result.get("interval", poll_interval)
+                    continue
+
+                if status == "APPROVED":
                     _save_credentials(respo_data)
                     PENDING_FILE.unlink(missing_ok=True)
 
@@ -255,25 +248,26 @@ def _poll_for_approval(device_code: str, token_endpoint: str, interval: int) -> 
 def cmd_login(args) -> None:
     """Full login flow: init device code → open browser → poll until done."""
     try:
+
         _delete_credentials()
+
         resp = requests.post(
-            # f"{OAUTH_BASE_URL}/oauth/api/device/init",
-            f"{BASE_URL}/web/xskill/init",
+            f"{OAUTH_BASE_URL}/oauth/api/device/init",
             json={
-                "identity_id": CLIENT_ID
+                "client_id": CLIENT_ID
             },
-            headers={"Content-Type": "application/json"},
-            timeout=60,
+            headers={"Monimaster-Device-Type": "110"},
+            timeout=10,
         )
         resp.raise_for_status()
     except requests.RequestException as e:
         print(f"Error: could not reach OAuth server: {e}", file=sys.stderr)
         sys.exit(1)
-    response = resp.json()
-    data = response.get("data")
-    print(f"init resp: {response}")
+    respose = resp.json()
+    data = respose.get("data")
+    print(f"init resp: {respose}")
 
-    device_code = data["identity_id"]
+    device_code = data["device_code"]
     verification_url = data.get("verification_uri_complete") or data.get("verification_uri", "")
     token_endpoint = data.get("token_endpoint", "")
     interval = data.get("interval", 2)
@@ -360,9 +354,9 @@ def cmd_status(args) -> None:
 def _device_unint() -> bool:
     """Unbind device account"""
     try:
-        client = ChatArtClient()
+        client = LitMediaClient()
         result = client.post_nocheck("/user/get-unbind-device")
-        #print(f"unbind-device resp: {result}")
+        # print(f"unbind-device resp: {result}")
         
         code = result.get("code", 0)
         data = result.get("data", False)
@@ -396,7 +390,7 @@ def cmd_account_switch(args) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ChatArt Device Authorization — log in via browser and save credentials.",
+        description="LitMedia Device Authorization — log in via browser and save credentials.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Subcommands:
@@ -421,6 +415,7 @@ Examples:
     sub.add_parser("logout", help="Remove saved credentials")
     sub.add_parser("status", help="Show current login state")
     sub.add_parser("accountswitch", help="Account switching")
+
     args = parser.parse_args()
 
     handlers = {

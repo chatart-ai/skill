@@ -27,7 +27,7 @@ python {baseDir}/scripts/ai_image.py <subcommand> --type <text2image|image_edit>
 
 ## Examples
 
-### List Models
+### List Models (ALWAYS run first — see § Model Selection)
 
 ```bash
 python {baseDir}/scripts/ai_image.py list-models --type text2image
@@ -41,7 +41,7 @@ Fixed-price model (no resolution):
 ```bash
 python {baseDir}/scripts/ai_image.py run \
   --type text2image \
-  --model "Nano Banana" \
+  --model "<exact display name from list-models>" \
   --prompt "A watercolor painting of a cat" \
   --aspect-ratio "1:1"
 ```
@@ -51,7 +51,7 @@ Required resolution：
 ```bash
 python {baseDir}/scripts/ai_image.py run \
   --type text2image \
-  --model "Nano Banana 2" \
+  --model "<exact display name from list-models>" \
   --prompt "A futuristic city skyline at dusk, neon lights reflected on wet streets" \
   --aspect-ratio "16:9" \
   --resolution "2K" \
@@ -65,7 +65,7 @@ Fixed-price model (no resolution):
 ```bash
 python {baseDir}/scripts/ai_image.py run \
   --type image_edit \
-  --model "Nano Banana" \
+  --model "<exact display name from list-models>" \
   --prompt "Change the background to a snowy mountain landscape" \
   --aspect-ratio "auto" \
   --input-images photo.jpg
@@ -76,7 +76,7 @@ Required resolution:
 ```bash
 python {baseDir}/scripts/ai_image.py run \
   --type image_edit \
-  --model "Nano Banana 2" \
+  --model "<exact display name from list-models>" \
   --prompt "Blend the style of both images" \
   --aspect-ratio "1:1" \
   --resolution "2K" \
@@ -88,14 +88,14 @@ python {baseDir}/scripts/ai_image.py run \
 
 ```bash
 python {baseDir}/scripts/ai_image.py estimate-cost \
-  --type text2image --model "Nano Banana" --resolution "2K" --count 2
+  --type text2image --model "<exact display name from list-models>" --resolution "2K" --count 2
 ```
 
 ### Download Results
 
 ```bash
 python {baseDir}/scripts/ai_image.py run \
-  --type text2image --model "Nano Banana" \
+  --type text2image --model "<exact display name from list-models>" \
   --prompt "Northern lights" --aspect-ratio "16:9" --resolution "2K" \
   --output-dir ./results
 ```
@@ -105,7 +105,7 @@ python {baseDir}/scripts/ai_image.py run \
 | Option | Description                                                                                                                                  |
 |--------|----------------------------------------------------------------------------------------------------------------------------------------------|
 | `--type` | `text2image` or `image_edit` (required)                                                                                                      |
-| `--model` | Model **display name** (required)                                                                                                            |
+| `--model` | Model **display name** — required, **no default**. Get exact names via `list-models` and let the user pick (see § Model Selection) |
 | `--prompt` | Text prompt (required)                                                                                                                       |
 | `--aspect-ratio` | Aspect ratio (required), e.g. `"16:9"`, `"1:1"`                                                                                              |
 | `--resolution` | `"1K"`, `"2K"`, `"4K"` — model-dependent                                                                                           |
@@ -117,23 +117,22 @@ python {baseDir}/scripts/ai_image.py run \
 | `--json` | Full JSON response (not used by default; only when the user explicitly requests raw JSON output)                                             |
 | `-q, --quiet` | Suppress status messages                                                                                                                     |
 
-## Model Recommendation
+## Model Selection (MANDATORY)
 
-> **Nano Banana is the top recommendation for all image tasks.**
-> Best overall quality, 14 aspect ratios, up to 4K, 14 reference images for editing.
+> **There is NO default model.** Model names written in docs or examples may be outdated or wrong — never guess, reuse an example name, or assume a recommendation.
 
-| Use Case | Recommended Models                          | Why |
-|----------|---------------------------------------------|-----|
-| **Best overall (default)** | **Nano Banana**                             | Strongest all-round model |
-| **Budget** | Nano Banana (10/img), Seedream 4.5 (10/img) | Lowest cost |
-| **No-resolution simplicity** | Nano Banana                 | No resolution param needed |
+Before **any** generation (including `estimate-cost`), always follow this flow:
 
-**Defaults:**
-- text2image → `Nano Banana`
-- image_edit → `Nano Banana`
+1. Run `list-models --type <text2image|image_edit>` to get the current supported model list with constraints (aspect ratios, resolutions, reference-image limits).
+2. Present the list to the user in plain language (model name + what it supports / is good for), and ask the user to pick one.
+3. Pass the **exact display name** returned by `list-models` to `--model`.
+
+If the user already named a model, still verify the name exists via `list-models --type <type>`; if it does not match any listed model, show the list and ask them to choose from it.
+
+**If a model is not found at runtime:** the script aborts **without submitting anything** (no default fallback) and prints the available models for that task type — present that list to the user and re-run with the name they pick.
 
 ## Key Notes
 
 - `aspectRatio` is always required;
 - `resolution` is required for some models, forbidden for others — check via `list-models`
-- **Imagen 4** is only available for text2image, not image_edit
+- Some models may only be available for one task type (`text2image` or `image_edit`) — always check the exact list via `list-models --type <type>`

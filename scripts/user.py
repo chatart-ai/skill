@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Query ChatArt account credit balance and usage history.
+"""Query LitMedia account credit balance and usage history.
 
 Usage:
     python user.py credit [--json]
@@ -15,9 +15,9 @@ import datetime
 sys.path.insert(0, os.path.dirname(__file__))
 
 from typing import Any, Optional
-from shared.client import ChatArtClient, TaskStatus
+from shared.client import LitMediaClient, TaskStatus
 
-CREDIT_PATH = "/web/member/user-diamond"
+CREDIT_PATH = "/user/credit/detail"
 
 TASK_TYPES = [
     "image",
@@ -25,29 +25,29 @@ TASK_TYPES = [
 ]
 
 HISTORY_ENDPOINTS = {
-    "image": "/web/art/history",
-    "video": "/web/video/history",
+    "image": "/lit-video/get-image-history",
+    "video": "/lit-video/get-video-history",
 }
 
-def cmd_credit(client: ChatArtClient, args):
-    result = client.post(CREDIT_PATH)
+def cmd_credit(client: LitMediaClient, args):
+    result = client.get(CREDIT_PATH)
 
     if args.json:
         print(json_mod.dumps(result, indent=2, ensure_ascii=False))
     else:
-        credit = result.get("diamond", result)
+        credit = result.get("credit", result)
         print(f"Credit balance: {credit}")
 
 
-def cmd_logs(client: ChatArtClient, args):
+def cmd_logs(client: LitMediaClient, args):
     payload = {
         "page": str(args.page),
-        "per_page": str(args.size),
+        "page_size": str(args.size),
         **({"start_time": args.start} if args.start else {}),
         **({"end_time": args.end} if args.end else {}),
     }
-    logs_path = HISTORY_ENDPOINTS[args.type]
-    result = client.get(logs_path, json=payload)
+    LOGS_PATH = HISTORY_ENDPOINTS[args.type]
+    result = client.post(LOGS_PATH, json=payload)
 
     if args.json:
         print(json_mod.dumps(result, indent=2, ensure_ascii=False))
@@ -55,36 +55,21 @@ def cmd_logs(client: ChatArtClient, args):
 
     page_no = args.page
     page_size = args.size
-    
-    # Extract data array from response
-    if isinstance(result, dict):
-        data_list = result.get("data", [])
-        total = result.get("total", len(data_list))
-        current_page = result.get("current_page", page_no)
-    elif isinstance(result, list):
-        data_list = result
-        total = len(data_list)
-        current_page = page_no
-    else:
-        data_list = []
-        total = 0
-        current_page = page_no
 
     if not args.quiet:
         print(
-            f"Page {current_page} | {len(data_list)} items (Total: {total})",
+            f"Page {page_no} | {len(result)} items",
             file=sys.stderr,
         )
 
-    if not data_list:
+    if not result:
         print("No records found.")
         return
 
     if args.type == "image":
-        print_image_history(data_list)
+        print_image_history(result)
     elif args.type == "video":
-        print_video_history(data_list)
-
+        print_video_history(result)
 
 
 def print_image_history(result: Optional[dict] = None):
@@ -93,50 +78,22 @@ def print_image_history(result: Optional[dict] = None):
     print("-" * len(header))
 
     for entry in result:
-        if not isinstance(entry, dict):
-            continue
-            
-        task_id = entry.get("id")
+        create_id = entry.get("create_id")
         ts = entry.get("create_at")
-        is_drawing = entry.get("is_drawing", 0)
-        
-        # Get first image from pic_url array
-        pic_urls = entry.get("pic_url", [])
-        first_pic = pic_urls[0] if pic_urls and isinstance(pic_urls, list) and len(pic_urls) > 0 else {}
-        pic_status = first_pic.get("status", 0) if isinstance(first_pic, dict) else 0
-        image_url = first_pic.get("url", "") if isinstance(first_pic, dict) else ""
-        
-        # Determine status based on is_drawing and pic_status
-        if is_drawing == 1 and pic_status == 1:
-            status_label = "completed"
-        elif is_drawing == 1 and pic_status == 0:
-            status_label = "working"
-        elif is_drawing == 2:
-            status_label = "failed"
-        elif is_drawing == 0:
-            status_label = "pending"
-        else:
-            status_label = "unknown"
-        
-        error = entry.get("comment", "") or ""
+        status = TaskStatus(entry.get("status"))
+        error = entry.get("error") or ""
+        image_urls = entry.get("image_urls", [])
 
         # 时间格式化
         date = datetime.datetime.fromtimestamp(ts).strftime("%y-%m-%d %H:%M") if ts else ""
 
         # 截断 error
-        error_short = (error[:22] + "...") if error and len(error) > 25 else (error or "")
+        error_short = (error[:22] + "...") if len(error) > 25 else error
 
-        # 显示图片或错误信息
-        if image_url:
-            display_text = image_url
-        elif is_drawing == 2:
-            display_text = error_short or "Failed"
-        elif is_drawing == 1 and not image_url:
-            display_text = "Processing..."
-        else:
-            display_text = "N/A"
+        # 只取第一张图
+        image_url = image_urls[0] if image_urls else error_short
 
-        print(f"{date:<16} {task_id:<8} {status_label:<10} {display_text}")
+        print(f"{date:<16} {create_id:<8} {status.label:<10} {image_url}")
 
 def print_video_history(result: Optional[dict] = None):
     header = f"{'Date':<16} {'TaskID':<8} {'St':<10} {'VideoURL'}"
@@ -144,62 +101,36 @@ def print_video_history(result: Optional[dict] = None):
     print("-" * len(header))
 
     for entry in result:
-        if not isinstance(entry, dict):
-            continue
-            
-        task_id = entry.get("id")
+        create_id = entry.get("create_id")
         ts = entry.get("create_at")
-        status_code = entry.get("status", 0)
-        
-        # Get first video from file array
-        files = entry.get("file", [])
-        first_file = files[0] if files and isinstance(files, list) and len(files) > 0 else {}
-        file_status = first_file.get("status", 0) if isinstance(first_file, dict) else 0
-        video_url = first_file.get("url", "") if isinstance(first_file, dict) else ""
-        
-        # Determine status label
-        if status_code == 1 and file_status == 1:
-            status_label = "completed"
-        elif status_code == 1 and file_status == 0:
-            status_label = "working"
-        elif status_code == 2:
-            status_label = "failed"
-        elif status_code == 0:
-            status_label = "pending"
-        else:
-            status_label = "unknown"
-        
-        error = entry.get("error_message", "") or entry.get("comment", "") or ""
+        status = TaskStatus(entry.get("status"))
+        error = entry.get("error") or ""
+        video_url = entry.get("video_url", [])
 
         # 时间格式化
         date = datetime.datetime.fromtimestamp(ts).strftime("%y-%m-%d %H:%M") if ts else ""
 
         # 截断 error
-        error_short = (error[:22] + "...") if error and len(error) > 25 else (error or "")
+        error_short = (error[:22] + "...") if len(error) > 25 else error
 
-        # 显示视频或错误信息
-        if video_url and status_code == 1:
-            display_text = video_url
-        elif status_code == 2:
-            display_text = error_short or "Failed"
-        elif status_code == 1 and not video_url:
-            display_text = "Processing..."
-        else:
-            display_text = "N/A"
+        # 只取第一张图
+        video_url = video_url if video_url else error_short
 
-        print(f"{date:<16} {task_id:<8} {status_label:<10} {display_text}")
+        print(f"{date:<16} {create_id:<8} {status.label:<10} {video_url}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Chatart account credit management."
+        description="LitMedia account credit management."
     )
+    parser.add_argument("--json", action="store_true",
+                        help="Output full JSON response")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="Suppress status messages on stderr")
+
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # credit command
-    credit_p = sub.add_parser("credit", help="Query credit balance")
-    credit_p.add_argument("--json", action="store_true",
-                          help="Output full JSON response")
+    sub.add_parser("credit", help="Query credit balance")
 
     logs_p = sub.add_parser("logs", help="Query credit usage history")
     logs_p.add_argument("--type", default=None, choices=TASK_TYPES,
@@ -212,13 +143,9 @@ def main():
                         help="Page number (default: 1)")
     logs_p.add_argument("--size", type=int, default=20,
                         help="Items per page (default: 20)")
-    logs_p.add_argument("--json", action="store_true",
-                        help="Output full JSON response")
-    logs_p.add_argument("-q", "--quiet", action="store_true",
-                        help="Suppress status messages on stderr")
 
     args = parser.parse_args()
-    client = ChatArtClient()
+    client = LitMediaClient()
 
     if args.command == "credit":
         cmd_credit(client, args)

@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
-"""Generate videos using ChatArt Common Task APIs.
+"""Generate videos using Litmedia Common Task APIs.
 
 ## AGENT INSTRUCTIONS — READ FIRST
+- NO DEFAULT MODEL. Model names in docs may be outdated or wrong.
+  Before ANY generation, run `list-models --type <type>` to get the
+  current supported model list, show it to the user, and let the user
+  pick. Always pass the EXACT display name returned by `list-models`.
+  If a model is NOT found, the script aborts (nothing is submitted, no
+  default fallback) and prints the available models — show that list to
+  the user and re-run with the name they pick.
 - Default workflow: ALWAYS use `run` (submit + auto-poll).
   Do NOT ask the user to run query manually.
 - Only use `query` when `run` has already timed out and a taskId exists,
@@ -12,9 +19,15 @@
   Always poll to completion within the timeout window.
 
 Supported task types:
-    i2v   Image-to-Video      — generate video from a first/end frame image
+    i2v   Image-to-Video      — generate video from a first/end frame image,
+            or from reference inputs in multi-reference mode:
+            --ref-images (multi-image), --ref-videos (video reference),
+            --ref-audios (voice reference). Frame mode and reference mode
+            are mutually exclusive; per-model limits are shown by list-models.
     t2v   Text-to-Video       — generate video from a text prompt
     extend Video Extension    — generate video from an input video + prompt
+    anim   Animation          — generate animation from an input image + style + prompt
+    a2ls  Audio-to-Lip-sync   — generate lip-synced video from an input image + audio + prompt
 
 Subcommands:
     run     Submit task AND poll until done — DEFAULT, use this first
@@ -22,10 +35,14 @@ Subcommands:
     query   Poll an existing taskId until done (or timeout) — use for recovery
 
 Usage:
-    python video_gen.py run  --type i2v  --model "Seedance 2.0" --first-frame <fileId|path> --prompt "..." [options]
-    python video_gen.py run  --type t2v  --model "Seedance 2.0" --prompt "..." [options]
-    python video_gen.py run  --type extend --model "PixVerse V6" --input_video <fileId|path> --prompt "..." [options]
-    python video_gen.py query  --type <i2v|t2v|extend> --task-id <taskId> [options]
+    python video_gen.py list-models --type <i2v|t2v|extend|anim|a2ls>   # ALWAYS run first; user picks the model
+    python video_gen.py run  --type i2v  --model "<name from list-models>" --first-frame <fileId|path> --prompt "..." [options]
+    python video_gen.py run  --type i2v  --model "<name from list-models>" --ref-images <fileId|path> [<fileId|path> ...] [--ref-videos <...>] [--ref-audios <...>] --prompt "..." [options]
+    python video_gen.py run  --type t2v  --model "<name from list-models>" --prompt "..." [options]
+    python video_gen.py run  --type extend --model "<name from list-models>" --input_video <fileId|path> --prompt "..." [options]
+    python video_gen.py run  --type anim --model "<name from list-models>" --input_image <fileId|path> --prompt "..." options
+    python video_gen.py run  --type a2ls --model "<name from list-models>" --input_image <fileId|path> --input_sound <fileId|path> --prompt "..." [options]
+    python video_gen.py query  --type <i2v|t2v|extend|anim|a2ls> --task-id <taskId> [options]
     
 """
 
@@ -41,28 +58,32 @@ import tempfile
 sys.path.insert(0, os.path.dirname(__file__))
 
 from typing import Any
-from shared.client import ChatArtClient, ChatArtError
+from shared.client import LitMediaClient, LitMediaError
 from shared.upload import resolve_local_file
 from shared.media_util import MediaUtils
 
-TASK_TYPES = ("i2v", "t2v", "omni", "extend")
+TASK_TYPES = ("i2v", "t2v", "extend", "anim", "a2ls")
 
 ENDPOINTS = {
     "i2v": {
-        "submit": "/web/video/generate-video",
-        "query": "/web/video/get-video-task",
+        "submit": "/lit-video/do-image-video",
+        "query": "/lit-video/do-process",
     },
     "t2v": {
-        "submit": "/web/video/generate-video",
-        "query": "/web/video/get-video-task",
-    },
-	"omni": {
-        "submit": "/web/video/generate-video",
-        "query": "/web/video/get-video-task",
+        "submit": "/lit-video/do-text-video",
+        "query": "/lit-video/do-process",
     },
     "extend": { 
-        "submit": "/web/video/generate-video",
-        "query": "/web/video/get-video-task",
+        "submit": "/lit-video/do-extend-video",
+        "query": "/lit-video/do-process",
+    },
+    "anim": { 
+        "submit": "/lit-video/ai-animation",
+        "query": "/lit-video/do-process",
+    },
+    "a2ls": { 
+        "submit": "/lit-video/image-lip-sync",
+        "query": "/lit-video/do-process",
     },
 }
 
@@ -73,133 +94,154 @@ DEFAULT_INTERVAL = 30
 # Model constraints — `model` must use display names, NOT code names.
 # Each entry: { "aspectRatio": list|None, "resolution": list|None, "duration": str }
 #   None = not supported / do not send
+# i2v entries also carry multi-reference caps (mirrored from the frontend
+# form schemas, image-to-video.ts):
+#   refImages — max entries for --ref-images  (backend img_url_list,  0 = unsupported)
+#   refVideos — max entries for --ref-videos  (backend video_url_list, 0 = unsupported)
+#   refAudios — max entries for --ref-audios  (backend audio_url_list, 0 = unsupported)
 # ---------------------------------------------------------------------------
 
 I2V_MODELS = {
-    # "LitAI 5":                      {"aspectRatio": None,                                          "resolution": [360, 540, 720, 1080],        "duration": "5,8,12",   "nativeAudio": True,  "inputMode": "first_end"},
-    "Seedance 2.0":                 {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720, 1080],              "duration": "5,10,15",   "nativeAudio": True,  "inputMode": ["first_last_frames", "omni_reference"]},
-    "Seedance 2.0 Fast":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720],              "duration": "5,10,15",   "nativeAudio": True,  "inputMode": ["first_last_frames", "omni_reference"]},
-    "Seedance 2.0 Mini":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9", "21:9"],         "resolution": [480, 720],              "duration": "5,10,15",   "nativeAudio": True,  "inputMode": ["first_last_frames", "omni_reference"]},
-    "Seedance 1.5 Pro":             {"aspectRatio": None,        								   "resolution": [480, 720, 1080],       "duration": "5,10",   "nativeAudio": True,  "inputMode": ["single_image"]},
-    "Kling V3":                     {"aspectRatio": None,                                          "resolution": [720, 1080, 2160],       "duration": "5,10,15",   "nativeAudio": True,  "inputMode": ["single_image", "first_last_frames"]},
-    "HappyHorse1.0":                {"aspectRatio": None,                                          "resolution": [720, 1080],       "duration": "5,10","nativeAudio": True, "inputMode": ["omni_reference"]},
+    "LitAI 5":                      {"aspectRatio": None,                                          "resolution": [360, 540, 720, 1080],        "duration": "5,8,12",   "nativeAudio": True,  "inputMode": "first_end", "refImages": 0,  "refVideos": 0, "refAudios": 0},
+    "Seedance 2.0":                 {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720],              "duration": "5,10,15",   "nativeAudio": True,  "inputMode": "first_end", "refImages": 9,  "refVideos": 1, "refAudios": 0},
+    "Seedance 2.0 Fast":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720],              "duration": "5,10,15",   "nativeAudio": True,  "inputMode": "first_end", "refImages": 9,  "refVideos": 1, "refAudios": 0},
+    "Seedance 1.5 Pro":             {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720],       "duration": "5",   "nativeAudio": True,  "inputMode": "first_end", "refImages": 0,  "refVideos": 0, "refAudios": 0},
+    "Kling V3":                     {"aspectRatio": None,                                          "resolution": [480, 720],       "duration": "5,10,15",   "nativeAudio": True,  "inputMode": "first_end", "refImages": 5,  "refVideos": 0, "refAudios": 0},
+    "LoveAI 1.0":                   {"aspectRatio": None,                                          "resolution": [480, 720, 1080],       "duration": "5,10","nativeAudio": False, "inputMode": "first_end", "refImages": 0,  "refVideos": 0, "refAudios": 0},
+    "MiniMax-H3":                   {"aspectRatio": ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"], "resolution": [480, 768, 1440],       "duration": "4-15",   "nativeAudio": False, "inputMode": "first_end", "refImages": 9,  "refVideos": 3, "refAudios": 3},  # 1440 = backend "2K" tier
+    "Seedance 2.5":                 {"aspectRatio": ["auto", "16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],        "resolution": [480, 720, 1080],       "duration": "4-30",   "nativeAudio": True,  "inputMode": "first_end", "refImages": 30, "refVideos": 10, "refAudios": 10},
 }
 
 T2V_MODELS = {
-    # "LitAI 5":                      {"aspectRatio": ["9:16", "1:1", "4:3", "16:9"],                "resolution": [360, 540, 720, 1080],        "duration": "5,8,12",   "nativeAudio": True},
-    "Seedance 2.0":                 {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720, 1080],              "duration": "5,10,15",   "nativeAudio": True},
+    "LitAI 5":                      {"aspectRatio": ["9:16", "1:1", "4:3", "16:9"],                "resolution": [360, 540, 720, 1080],        "duration": "5,8,12",   "nativeAudio": True},
+    "Seedance 2.0":                 {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720],              "duration": "5,10,15",   "nativeAudio": True},
     "Seedance 2.0 Fast":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720],              "duration": "5,10,15",   "nativeAudio": True},
-    "Seedance 2.0 Mini":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9", "21:9"],         "resolution": [480, 720],              "duration": "5,10,15",   "nativeAudio": True},
-    "Seedance 1.5 Pro":             {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720, 1080],        "duration": "5,10",   "nativeAudio": True},
-    "Kling V3":                     {"aspectRatio": ["9:16", "1:1", "16:9"],                       "resolution": [720, 1080, 2160],        "duration": "5,10,15",   "nativeAudio": True},
-    "HappyHorse1.0":                {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [720, 1080],       "duration": "5,10",      "nativeAudio": True},
+    "Seedance 1.5 Pro":             {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720],        "duration": "5",   "nativeAudio": True},
+    "Kling V3":                     {"aspectRatio": ["9:16", "1:1", "16:9"],                       "resolution": [480, 720],        "duration": "5,10,15",   "nativeAudio": True},
+    "Wan 2.6":                      {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [720, 1080],       "duration": "5,10","nativeAudio": True},
+    "MiniMax-H3":                   {"aspectRatio": ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"], "resolution": [480, 768, 1440],       "duration": "4-15",   "nativeAudio": False},  # 1440 = backend "2K" tier
+    "Seedance 2.5":                 {"aspectRatio": ["auto", "16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],        "resolution": [480, 720, 1080],       "duration": "4-30",   "nativeAudio": True},
 }
 
-# Omni Reference models - supports 1-9 reference images with flexible composition
-OMNI_MODELS = {
-    "Seedance 2.0":                 {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720, 1080],  "duration": "5,10,15",   "nativeAudio": True},
-    "Seedance 2.0 Fast":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9"],         "resolution": [480, 720],  "duration": "5,10,15",   "nativeAudio": True},
-    "Seedance 2.0 Mini":            {"aspectRatio": ["9:16", "3:4", "1:1", "4:3", "16:9", "21:9"], "resolution": [480, 720],  "duration": "5,10,15",   "nativeAudio": True},
-    "HappyHorse1.0":                {"aspectRatio": None,                                          "resolution": [720, 1080],       "duration": "5,10",      "nativeAudio": False},
-}
 
 EXTEND_MODELS = {
-    "Seedance 2.0":                 {"aspectRatio": None,           "resolution": [480, 720],               "duration": "5,10,15",   "nativeAudio": True},
-    "Seedance 2.0 Fast":            {"aspectRatio": None,           "resolution": [480, 720],               "duration": "5,10,15",   "nativeAudio": True},
-    "Kling V3":                     {"aspectRatio": None,           "resolution": [720, 1080],              "duration": "5,10,15",   "nativeAudio": True},
-    "PixVerse V6":                  {"aspectRatio": None,           "resolution": [360, 540, 720, 1080],    "duration": "5,10,15",  "internetSearch": False,  "nativeAudio": True},
+    "LitAI 5":              {"aspectRatio": None, "resolution": None,  "duration": "5,8",  "internetSearch": False,  "nativeAudio": False},
 }
 
-MODEL_REGISTRY = {"i2v": I2V_MODELS, "t2v": T2V_MODELS, "omni": OMNI_MODELS, "extend": EXTEND_MODELS}
+ANIM_MODELS = {
+    "LitAI 5":              {"style": ["","comic", "anime", "3d_animation", "clay", "cyberpunk"], "aspectRatio": None, "resolution": [360, 540, 720, 1080],  "duration": "5,8", "nativeAudio": False, "inputMode": "first_end"},
+}
+
+A2LS_MODELS = {
+    "LitAI 5":              {"sound_speed": "0.5-2.0", "aspectRatio": None, "resolution": None,  "duration": None, "nativeAudio": True, "inputMode": "first_end"},
+}
+
+MODEL_REGISTRY = {"i2v": I2V_MODELS, "t2v": T2V_MODELS, "extend": EXTEND_MODELS, "anim": ANIM_MODELS, "a2ls": A2LS_MODELS}
 # ---------------------------------------------------------------------------
-# Per-second pricing rates (credits, generatingCount=1).
+# Per-second pricing rates, in the same unit as backend `cost_credit` (credits/second).
 # Key: (resolution_or_0, sound_on_or_None). 0 = resolution-independent, None = sound irrelevant.
-# totalCost = rate * duration * generatingCount
-# See references/api-docs.md for full pricing tables.
+# totalCost = int(rate * duration) per backend formula; multiplied here by generatingCount.
+# Confirmed against backend billing for LitAI 5 (model ids 1/54/59):
+#   quality map = {360p: 4, 540p: 6, 720p: 8, 1080p: 14}, any other quality falls back to 100/s,
+#   sound_effect_switch does NOT change the price, and duration defaults to 4s when missing.
+# MiniMax-H3 (id 85) confirmed from backend code: 480p=10, 768p=20, default(1080p/2K/...)=30 credits/s.
+# Seedance 2.5 (id 86) confirmed from backend code: generation = 480p:30, 720p:60, 1080p:150, default:30
+#   credits/s; its video-extend branch bills differently (480p:50, default:100) and is NOT covered here
+#   (the extend flow is currently hardcoded to LitAI 5).
+# Other models' rates are reverse-engineered from task history (cost_credit / duration)
+# and may be approximate.
 # ---------------------------------------------------------------------------
 
-_PRICING_TABLE = {
-    # Seedance 2.0
-    ("Seedance 2.0", 480, 5): 60,
-    ("Seedance 2.0", 480, 10): 120,
-    ("Seedance 2.0", 480, 15): 180,
-    ("Seedance 2.0", 720, 5): 90,
-    ("Seedance 2.0", 720, 10): 180,
-    ("Seedance 2.0", 720, 15): 270,
-    ("Seedance 2.0", 1080, 5): 120,
-    ("Seedance 2.0", 1080, 10): 240,
-    ("Seedance 2.0", 1080, 15): 360,
-    
-    # Seedance 2.0 Fast
-    ("Seedance 2.0 Fast", 480, 5): 30,
-    ("Seedance 2.0 Fast", 480, 10): 60,
-    ("Seedance 2.0 Fast", 480, 15): 90,
-    ("Seedance 2.0 Fast", 720, 5): 60,
-    ("Seedance 2.0 Fast", 720, 10): 120,
-    ("Seedance 2.0 Fast", 720, 15): 180,
-
-    # Seedance 2.0 Mini
-    ("Seedance 2.0 Mini", 480, 5): 40,
-    ("Seedance 2.0 Mini", 480, 10): 80,
-    ("Seedance 2.0 Mini", 480, 15): 120,
-    ("Seedance 2.0 Mini", 720, 5): 60,
-    ("Seedance 2.0 Mini", 720, 10): 120,
-    ("Seedance 2.0 Mini", 720, 15): 180,
-    
-    # Seedance 1.5 Pro
-    ("Seedance 1.5 Pro", 480, 5): 32,
-    ("Seedance 1.5 Pro", 480, 10): 64,
-    ("Seedance 1.5 Pro", 720, 5): 48,
-    ("Seedance 1.5 Pro", 720, 10): 96,
-    ("Seedance 1.5 Pro", 1080, 5): 64,
-    ("Seedance 1.5 Pro", 1080, 10): 128,
-    
-    # Kling 3.0 (Kling V3)
-    ("Kling V3", 720, 5): 40,
-    ("Kling V3", 720, 10): 80,
-    ("Kling V3", 720, 15): 120,
-    ("Kling V3", 1080, 5): 60,
-    ("Kling V3", 1080, 10): 120,
-    ("Kling V3", 1080, 15): 180,
-    ("Kling V3", 2160, 5): 200,
-    ("Kling V3", 2160, 10): 400,
-    ("Kling V3", 2160, 15): 600,
-    
-    # Happy Horse 1.0
-    ("HappyHorse1.0", 720, 5): 48,
-    ("HappyHorse1.0", 720, 10): 96,
-    ("HappyHorse1.0", 720, 15): 144,
-    ("HappyHorse1.0", 1080, 5): 72,
-    ("HappyHorse1.0", 1080, 10): 144,
-    ("HappyHorse1.0", 1080, 15): 216,
-
-    # PixVerse V6
-    ("PixVerse V6", 360, 5): 20,
-    ("PixVerse V6", 360, 10): 40,
-    ("PixVerse V6", 360, 15): 60,
-    ("PixVerse V6", 540, 5): 25,
-    ("PixVerse V6", 540, 10): 50,
-    ("PixVerse V6", 540, 15): 75,
-    ("PixVerse V6", 720, 5): 30,
-    ("PixVerse V6", 720, 10): 60,
-    ("PixVerse V6", 720, 15): 90,
-    ("PixVerse V6", 1080, 5): 50,
-    ("PixVerse V6", 1080, 10): 100,
-    ("PixVerse V6", 1080, 15): 150,
+_RATE = {
+    "Standard":                {(0, None): 40},
+    "Fast":                    {(0, None): 40},
+    "Seedance 1.5 Pro":        {(720, False): 4.8, (720, True): 10, (1080, False): 11.2, (1080, True): 22},
+    "Seedance 1.0 Pro Fast":   {(720, None): 2.8, (1080, None): 6},
+    "Seedance 1.0 Pro":        {(720, None): 8, (1080, None): 18},
+    "LitAI 5":                 {(360, None): 4, (540, None): 6, (720, None): 8, (1080, None): 14,
+                                (0, None): 100},  # (0, None) = fallback for unmapped quality
+    "Kling V3":                {(720, False): 20, (720, True): 32, (1080, False): 32, (1080, True): 40},
+    "Kling V3 Reference Video":{(720, False): 20, (720, True): 32, (1080, False): 32, (1080, True): 40},
+    "Kling O3":                {(720, False): 20, (720, True): 24, (1080, False): 32, (1080, True): 36},
+    "Kling O3 Reference-to-Video": {(720, False): 20, (720, True): 24, (1080, False): 32, (1080, True): 36},
+    "Kling 2.6":               {(0, False): 12.4, (0, True): 26},
+    "Kling O1 Reference-to-Video": {(1080, None): 20},
+    "Kling 2.5 Turbo Pro":     {(1080, None): 12.4},
+    "Kling 2.5 Turbo Std":     {(1080, None): 8},
+    "Sora 2":                  {(0, None): 22.4},
+    "Sora 2 Pro":              {(720, None): 67.2, (1080, None): 112},
+    "Veo 3.1":                 {(720, False): 44, (720, True): 88, (1080, False): 44, (1080, True): 88, (2160, False): 88, (2160, True): 132},
+    "Veo 3.1 Reference to video": {(720, False): 44, (720, True): 88, (1080, False): 44, (1080, True): 88, (2160, False): 88, (2160, True): 132},
+    "Veo 3.1 Fast":            {(720, False): 24, (720, True): 36, (1080, False): 24, (1080, True): 36, (2160, False): 68, (2160, True): 80},
+    "Veo 3.1 Fast Reference to video": {(720, False): 24, (720, True): 36, (1080, False): 24, (1080, True): 36, (2160, False): 68, (2160, True): 80},
+    "MiniMax-Hailuo-02":       {(768, None): 12.8, (1080, None): 18.8},
+    "MiniMax-Hailuo-2.3":      {(768, None): 12.8, (1080, None): 18.8},
+    "MiniMax-Hailuo-2.3-Fast": {(768, None): 7.2, (1080, None): 12},
+    "MiniMax-H3":              {(480, None): 10, (768, None): 20, (0, None): 30},  # (0, None) = default case (1080p/2K/...)
+    "Seedance 2.5":            {(480, None): 30, (720, None): 60, (1080, None): 150,
+                                 (0, None): 30},  # (0, None) = backend default case (same as 480p)
+    "Vidu Q3 Pro":             {(540, None): 16, (720, None): 36, (1080, None): 40},
+    "Vidu Q2":                 {(1080, None): 11.2},
+    "Vidu Q2 Reference to Video": {(1080, None): 22.4},
+    "Wan 2.6":                 {(720, None): 18.4, (1080, None): 30.8},
+    "Kling O3 Video-Edit":     {(720, None): 68, (1080, None): 80},
+    "Kling O1 Video-Edit":     {(0, None): 32},
 }
 
 MODEL_MAP = {
-    # "ArtMotion4.1": "art-motion-4.1",
-    "Seedance 2.0": "seedance-2.0",
-    "Seedance 2.0 Fast": "seedance-2.0-fast",
-    "Kling V3": "kling-3-0",
-    "HappyHorse1.0": "happy-horse-1-0",
-    "Seedance 1.5 Pro": "seedance-1.5-pro",
-    "PixVerse V6": "pix-verse-6",
-    "Seedance 2.0 Mini": "seedance-2.0-mini",
+    "litvideo": 1,
+    "pix": 2,
+    "vidu1.5": 3,
+    "jimeng/seedance 1.0 lite -安全版": 4,
+    "kling1.6": 5,
+    "viduq1": 6,
+    "vidu2.0": 7,
+    "wan2.2": 8,
+    "LoveAI 1.0": 9,
+    "veo3 fast": 10,
+    "veo3": 11,
+    "minimax-hailuo-02": 12,
+    "viduq2 pro": 13,
+    "viduq2 turbo": 14,
+    "wan2.5": 15,
+    "sora2": 16,
+    "sora2-pro": 17,
+    "veo3.1-fast": 18,
+    "veo3.1-pro": 19,
+    "viduq2": 20,
+    "minimax-hailuo-2.3(海螺活动专用)": 21,
+    "minimax-hailuo-2.3 fast(海螺活动专用)": 22,
+    "Seedance 1.0 pro -安全版": 23,
+    "Seedance 1.0 pro fast -安全版": 24,
+    "minimax-hailuo-2.3": 25,
+    "minimax-hailuo-2.3 fast": 26,
+    "LitAI 5 pro": 27,
+    "viduq2-参考生音视频模型": 28,
+    "kling-2.5 turbo": 29,
+    "Seedance 1.5 Pro": 30,
+    "Wan 2.6": 31,
+    "kling o1": 32,
+    "kling 2.6": 33,
+    "vidu q2 pro fast": 34,
+    "sora2 free": 35,
+    "LitAI 5": 1,
+    "kling ai（数字人专用）": 37,
+    "wan 2.6  flash": 38,
+    "Seedance 1.5 pro fast": 39,
+    "ai mv 5.0": 40,
+    "Seedance 2.0": 41,
+    "Seedance 2.0 Fast": 42,
+    "Kling V3": 43,
+    "kling o3": 44,
+    "wan 2.2-角色替换": 45,
+    "kling 动作模仿": 46,
+    "视频增强": 47,
+    "ai mv 5.5": 50,
+    "MiniMax-H3": 85,
+    "Seedance 2.5": 86,
 }
 
-def get_model_id_by_name(model_name: str) -> str | None:
+def get_model_id_by_name(model_name: str) -> int | None:
     """
     根据模型名称获取对应的模型 ID（忽略大小写比较）。
     
@@ -211,31 +253,39 @@ def get_model_id_by_name(model_name: str) -> str | None:
     """
     model_name_lower = model_name.lower()
     for name, model_id in MODEL_MAP.items():
-        # name=Seedance 2.0 这里由于用户输入seedance2.0、seedance2或者seedance 2，下面条件判断无法进行匹配，所以这里需要进行处理，让其能够进行匹配
-        if ((name == "Seedance 2.0" and model_name_lower in ["seedance 2.0", "seedance2.0", "seedance 2", "seedance2", "seedance"]) or
-            (name == "Seedance 2.0 Fast" and model_name_lower in ["seedance 2.0 fast", "seedance2.0 fast", "seedance2.0fast", "seedance 2 fast", "seedance2 fast", "seedance2fast"]) or
-            (name == "Seedance 2.0 Mini" and model_name_lower in ["seedance 2.0 mini", "seedance2.0 mini", "seedance 2.0mini", "seedance2.0mini", "seedance 2 mini", "seedance2 mini", "seedance2mini"]) or
-            (name == "Kling V3" and model_name_lower in ["kling v3", "kling v3.0", "klingv3", "kling 3", "kling3", "kling3.0", "kling"]) or
-            (name == "HappyHorse1.0" and model_name_lower in ["happyhorse1.0", "happyhorse 1.0", "happy horse 1.0", "happyhorse", "happyhorse1", "happy horse", "happy horse 1"]) or
-            (name == "Seedance 1.5 Pro" and model_name_lower in ["seedance 1.5 pro", "seedance1.5 pro", "seedance 1.5pro", "seedance1.5pro", "seedance 1.5", "seedance1.5", "seedance pro", "seedancepro"]) or
-            (name == "PixVerse V6" and model_name_lower in ["pixverse v6", "pixverse6", "pix verse v6", "pix verse6", "pixverse", "pix verse"])):
+        if name.lower() == model_name_lower:
             return model_id
     
     return None
 
+def _fail_unknown_model(model: str, task_type: str) -> None:
+    """模型找不到时：打印该任务类型的可用模型清单并中止（绝不回退默认模型）。
+
+    Agent 必须把清单展示给用户、由用户重新选择，再用精确 display name 重跑。
+    """
+    registry = MODEL_REGISTRY.get(task_type, {})
+    print(f"ERROR: model '{model}' not found for type '{task_type}'. "
+          "Task was NOT submitted and NO default model was used.", file=sys.stderr)
+    if registry:
+        print(f"Available models for {task_type} — show this list to the user "
+              "and re-run with the EXACT display name the user picks:",
+              file=sys.stderr)
+        for name in sorted(registry):
+            print(f"  - {name}", file=sys.stderr)
+    print(f"(constraints detail: list-models --type {task_type})", file=sys.stderr)
+    sys.exit(2)
 def estimate_cost(model: str, resolution: int | None, duration: int,
                   sound_on: bool = False, count: int = 1) -> float | None:
-    """Return estimated total cost in credits, or None if model/params unknown."""
-    if not resolution:
+    """Return estimated total cost in credits (same unit as backend cost_credit),
+    or None if model/params unknown."""
+    rates = _RATE.get(model)
+    if not rates:
         return None
-    
-    key = (model, resolution, duration)
-    unit_cost = _PRICING_TABLE.get(key)
-    
-    if unit_cost is None:
-        return None
-    
-    return round(unit_cost * count, 2)
+    res = resolution or 0
+    for key in [(res, sound_on), (res, None), (0, sound_on), (0, None)]:
+        if key in rates:
+            return round(rates[key] * duration * count, 2)
+    return None
 
 
 def _parse_duration_spec(spec: str) -> str:
@@ -252,17 +302,11 @@ def _parse_duration_spec(spec: str) -> str:
 
 def validate_model_params(task_type: str, model: str, aspect_ratio: str | None,
                           resolution: int | None, duration: int | None,
-                          quiet: bool) -> None:
+                          sound: str | None, quiet: bool) -> None:
     """Warn on stderr if parameters are incompatible with model constraints."""
     registry = MODEL_REGISTRY.get(task_type, {})
     if model not in registry:
-        if not quiet:
-            known = ", ".join(sorted(registry.keys()))
-            print(
-                f"Warning: unknown model '{model}' for {task_type}. "
-                f"Known models: {known}",
-                file=sys.stderr,
-            )
+        _fail_unknown_model(model, task_type)
         return
 
     spec = registry[model]
@@ -314,12 +358,29 @@ def validate_model_params(task_type: str, model: str, aspect_ratio: str | None,
                 file=sys.stderr,
             )
 
+    if sound and not spec.get("nativeAudio"):
+        if not quiet:
+            print(
+                f"Warning: model '{model}' does not support native audio "
+                f"(got --sound {sound}). Parameter will be ignored by the API.",
+                file=sys.stderr,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def resolve_file(client: ChatArtClient, file_ref: str, quiet: bool) -> str:
+# Backend `quality` strings are mostly "<height>p", but some tiers use a label
+# instead (MiniMax-H3 accepts "480p", "768p", "2K"). CLI exposes 2K as 1440
+# (2K UHD height) and maps it here when building request bodies.
+_QUALITY_OVERRIDES = {1440: "2K"}
+
+def resolution_to_quality(resolution: int) -> str:
+    """Map a CLI resolution value to the backend `quality` string."""
+    return _QUALITY_OVERRIDES.get(resolution, f"{resolution}p")
+
+def resolve_file(client: LitMediaClient, file_ref: str, quiet: bool) -> str:
     """If file_ref looks like a local path, upload it and return fileId."""
     return resolve_local_file(file_ref, quiet=quiet, client=client)
 
@@ -335,8 +396,41 @@ def get_video_duration(file_ref: str, quiet: bool) -> float:
         local_file = out_path
 
     return MediaUtils.get_duration(local_file)
-	
-def build_anim_body(args, client: ChatArtClient) -> dict:
+
+def build_a2ls_body(args, client: LitMediaClient) -> dict:
+    """Build request body for Audio-to-Lip-sync."""
+    body: dict[str, Any] = {
+        # "model": args.model,
+        "prompt": "",
+    }
+    if args.prompt:
+        body["prompt"] = args.prompt
+    if args.model:
+        body["video_model"] = 36
+    if args.input_image:
+        if os.path.isfile(args.input_image):
+            body["img_url"] = resolve_file(client, args.input_image, args.quiet)
+        else:
+            body["img_url"] = args.input_image
+    if args.input_sound:
+        if os.path.isfile(args.input_sound):
+            duration = int(get_video_duration(args.input_sound, args.quiet) / 1000)
+            body["duration"] = duration
+            body["sound_url"] = resolve_file(client, args.input_sound, args.quiet)
+        else:
+            body["sound_url"] = args.input_sound
+            duration = int(get_video_duration(args.input_sound, args.quiet) / 1000)
+            body["duration"] = duration
+    
+    # 默认语速1.0
+    body["sound_speed"] = 1
+
+    # 是否是数字人
+    body["is_ai_avatar"] = 0
+
+    return body
+
+def build_anim_body(args, client: LitMediaClient) -> dict:
     """Build request body for Text-to-Video."""
     body = {
         # "model": args.model,
@@ -350,10 +444,7 @@ def build_anim_body(args, client: ChatArtClient) -> dict:
         else:
             body["img_url"] = args.input_image
     if args.resolution:
-        if args.resolution == 2160:
-            body["quality"] = "4k"
-        else:
-            body["quality"] = str(args.resolution) + "p"
+        body["quality"] = resolution_to_quality(args.resolution)
     if args.duration:
         body["duration"] = args.duration
     if args.style:
@@ -378,27 +469,21 @@ def calculate_extend_quality_from_height(height: int) -> str:
     else:
         return '360p'
 
-def build_extend_body(args, client: ChatArtClient) -> dict:
+def build_extend_body(args, client: LitMediaClient) -> dict:
     """Build request body for Text-to-Video."""
     body = {
-        "video_id": "103",
-        "function_mode": "single_image",
+        # "model": args.model,
         "prompt": args.prompt,
-        "image_url": [],
-        "sound": 1,
     }
     if args.model:
-        body["gpt_type"] = get_model_id_by_name(args.model)
-        body["original_model"] = get_model_id_by_name(args.model)
-
-    resolution = None
+        body["video_model"] = 1
     if args.input_video:
         if os.path.isfile(args.input_video):
             resolution = MediaUtils.get_resolution(args.input_video)
-            body["image_url"].append(resolve_file(client, args.input_video, args.quiet))
+            body["upload_video_url"] = resolve_file(client, args.input_video, args.quiet)
         else:
             resolution = MediaUtils.get_resolution_from_url(args.input_video)
-            body["image_url"].append(args.input_video)
+            body["upload_video_url"] = args.input_video
 
     if resolution:
         body["quality"] = calculate_extend_quality_from_height(resolution)
@@ -411,86 +496,31 @@ def build_extend_body(args, client: ChatArtClient) -> dict:
     #     body["video_num"] = args.count
     return body
 
-def build_i2v_body(args, client: ChatArtClient) -> dict:
+def build_i2v_body(args, client: LitMediaClient) -> dict:
     """Build request body for Image-to-Video."""
-    body: dict[str, Any] = {
-        "video_id": "102",
-        "sound": 1
-    }
-
+    body = {}
     if args.model:
-        body["gpt_type"] = get_model_id_by_name(args.model)
-        body["original_model"] = get_model_id_by_name(args.model)
-
-    if body["original_model"] is None:
-        raise ValueError(f"model name err")
-		
-    # Collect all image references
-    all_images = []
-    
-    # Process ref_images (omni mode, supports 1-9 images)
-    if args.ref_images:
-        for ref in args.ref_images:
-            if os.path.isfile(ref):
-                all_images.append(resolve_file(client, ref, args.quiet))
-            else:
-                all_images.append(ref)
-    
-    # Process first_frame and end_frame
-    frame_images = []
+        model_id = get_model_id_by_name(args.model)
+        if model_id is None:
+            _fail_unknown_model(args.model, args.type)
+        body["video_model"] = model_id
     if args.first_frame:
-        if os.path.isfile(args.first_frame):
-            frame_images.append(resolve_file(client, args.first_frame, args.quiet))
-        else:
-            frame_images.append(args.first_frame)
-    
+        body["img_url"] = resolve_file(client, args.first_frame, args.quiet)
     if args.end_frame:
-        if os.path.isfile(args.end_frame):
-            frame_images.append(resolve_file(client, args.end_frame, args.quiet))
-        else:
-            frame_images.append(args.end_frame)
-    
-    # Mode selection logic
-    has_ref_images = len(all_images) > 0
-    has_frames = len(frame_images) > 0
-    total_images = len(all_images) + len(frame_images)
-    
-    # Determine function_mode based on user intent and image count
-    if has_ref_images:
-        # Using ref_images - determine mode based on model capability and image count
-        # Check if model supports single_image mode
-        registry = MODEL_REGISTRY.get(args.type, {})
-        model_supports_single = False
-        if args.model in registry:
-            supported_modes = registry[args.model].get("inputMode", [])
-            if isinstance(supported_modes, str):
-                supported_modes = [supported_modes]
-            model_supports_single = "single_image" in supported_modes
-        
-        if len(all_images) == 1 and model_supports_single:
-            # Single image + model supports single mode -> single_image mode
-            body["function_mode"] = "single_image"
-            body["image_url"] = all_images
-            if not args.quiet:
-                print(f"Using single_image mode with 1 reference image", file=sys.stderr)
-        else:
-            # 2+ images OR model doesn't support single mode -> omni_reference mode
-            body["function_mode"] = "omni_reference"
-            body["image_url"] = all_images
-            if not args.quiet:
-                print(f"Using omni_reference mode with {len(all_images)} reference image(s)", file=sys.stderr)
-    elif has_frames:
-        # Using first/end frames -> first_last_frames mode
-        body["function_mode"] = "first_last_frames"
-        body["image_url"] = frame_images
-        if not args.quiet:
-            print(f"Using first_last_frames mode with {len(frame_images)} frame(s)", file=sys.stderr)
-
-    else:
-        # No images provided - should not happen due to validation
-        body["function_mode"] = "first_last_frames"
-        body["image_url"] = []
-
+        body["last_img_url"] = resolve_file(client, args.end_frame, args.quiet)
+    if args.ref_images:
+        # Backend explodes these fields by comma — send a comma-joined string.
+        body["img_url_list"] = ",".join(
+            resolve_file(client, ref, args.quiet) for ref in args.ref_images
+        )
+    if args.ref_videos:
+        body["video_url_list"] = ",".join(
+            resolve_file(client, ref, args.quiet) for ref in args.ref_videos
+        )
+    if args.ref_audios:
+        body["audio_url_list"] = ",".join(
+            resolve_file(client, ref, args.quiet) for ref in args.ref_audios
+        )
     if args.prompt:
         body["prompt"] = args.prompt
 
@@ -498,121 +528,51 @@ def build_i2v_body(args, client: ChatArtClient) -> dict:
     if args.model in registry:
         spec = registry[args.model]
         if args.resolution and spec["resolution"] is not None:
-            if args.resolution == 2160:
-                body["quality"] = "4k"
-            else:
-                body["quality"] = str(args.resolution) + "p"
-
-        if args.aspect_ratio and spec["aspectRatio"] is not None:
-            body["ratio"] = args.aspect_ratio
-
-    if args.duration:
-        body["duration"] = str(args.duration)
-    # if args.sound:
-    #    body["sound"] = args.sound
-    # if args.count:
-    #    body["video_num"] = args.count
-    return body
-
-
-def build_t2v_body(args) -> dict:
-    """Build request body for Text-to-Video."""
-    body = {
-        "video_id": "101",
-        "sound": 1,
-        "function_mode": "single_image",
-        "image_url":[],
-        "prompt": args.prompt,
-    }
-
-    if args.model:
-        body["gpt_type"] = get_model_id_by_name(args.model)
-        body["original_model"] = get_model_id_by_name(args.model)
-
-    if body["original_model"] is None:
-        raise ValueError(f"model name err")
-
-    registry = MODEL_REGISTRY.get(args.type, {})
-    if args.model in registry:
-        spec = registry[args.model]
-        if args.resolution and spec["resolution"] is not None:
-            if args.resolution == 2160:
-                body["quality"] = "4k"
-            else:
-                body["quality"] = str(args.resolution) + "p"
+            body["quality"] = resolution_to_quality(args.resolution)
 
         if args.aspect_ratio and spec["aspectRatio"] is not None:
             body["ratio"] = args.aspect_ratio
 
     if args.duration:
         body["duration"] = args.duration
-
-    if args.sound is not None:
-        body["sound"] = 1 if args.sound.lower() == "true" else 0
-    
+    if args.sound:
+        body["sound_effect_switch"] = 1 if args.sound == "on" else 0
+    if args.count:
+        body["video_num"] = args.count
     return body
 
-def build_omni_body(args, client: ChatArtClient) -> dict:
-    """Build request body for Omni Reference mode (1-9 images)."""
-    
-    # Collect all images from --ref-images
-    all_images = []
-    if args.ref_images:
-        for ref in args.ref_images:
-            if os.path.isfile(ref):
-                all_images.append(resolve_file(client, ref, args.quiet))
-            else:
-                all_images.append(ref)
-    
-    # Determine function_mode based on image count and model capability
-    registry = MODEL_REGISTRY.get(args.type, {})
-    model_supports_single = False
-    if args.model in registry:
-        supported_modes = registry[args.model].get("inputMode", [])
-        if isinstance(supported_modes, str):
-            supported_modes = [supported_modes]
-        model_supports_single = "single_image" in supported_modes
-    
-    if len(all_images) == 1 and model_supports_single:
-        function_mode = "single_image"
-    else:
-        function_mode = "omni_reference"
-    
+
+def build_t2v_body(args) -> dict:
+    """Build request body for Text-to-Video."""
     body = {
-        "video_id": "102",
-        "sound": False,
-        "function_mode": function_mode,
-        "image_url": all_images,
+        # "model": args.model,
+        "prompt": args.prompt,
     }
-    
+
     if args.model:
-        body["original_model"] = get_model_id_by_name(args.model)
-        body["gpt_type"] = get_model_id_by_name(args.model)
-
-    if body["original_model"] is None:
-        raise ValueError(f"model name err")
-
-    if args.prompt:
-        body["prompt"] = args.prompt
+        model_id = get_model_id_by_name(args.model)
+        if model_id is None:
+            _fail_unknown_model(args.model, args.type)
+        body["video_model"] = model_id
 
     registry = MODEL_REGISTRY.get(args.type, {})
     if args.model in registry:
         spec = registry[args.model]
         if args.resolution and spec["resolution"] is not None:
-            body["quality"] = str(args.resolution) + "p"
+            body["quality"] = resolution_to_quality(args.resolution)
 
         if args.aspect_ratio and spec["aspectRatio"] is not None:
             body["ratio"] = args.aspect_ratio
 
     if args.duration:
-        body["duration"] = str(args.duration)
-
-
-    # 打印body
-    # print(f"body: {json_mod.dumps(body, ensure_ascii=False)}", file=sys.stderr)
-    
+        body["duration"] = args.duration
+    if args.sound:
+        body["sound_effect_switch"] = 1 if args.sound == "on" else 0
+    if args.count:
+        body["video_num"] = args.count
     return body
-def build_body(args, client: ChatArtClient) -> dict:
+
+def build_body(args, client: LitMediaClient) -> dict:
     """Dispatch to the type-specific body builder, with model constraint checks."""
     if args.model:
         validate_model_params(
@@ -620,39 +580,41 @@ def build_body(args, client: ChatArtClient) -> dict:
             getattr(args, "aspect_ratio", None),
             getattr(args, "resolution", None),
             getattr(args, "duration", None),
+            # Only i2v / t2v send sound_effect_switch.
+            args.sound if args.type in ("i2v", "t2v") else None,
             args.quiet,
         )
     if args.type == "i2v":
         return build_i2v_body(args, client)
     elif args.type == "t2v":
         return build_t2v_body(args)
-    elif args.type == "omni":
-        return build_omni_body(args, client)
     elif args.type == "extend":
         return build_extend_body(args, client)
-    #elif args.type == "anim":
-    #    return build_anim_body(args, client)
+    elif args.type == "anim":
+        return build_anim_body(args, client)
+    elif args.type == "a2ls":
+        return build_a2ls_body(args, client)
     raise ValueError(f"Unknown type: {args.type}")
 
 
-def do_submit(client: ChatArtClient, task_type: str, body: dict, quiet: bool) -> str:
+def do_submit(client: LitMediaClient, task_type: str, body: dict, quiet: bool) -> str:
     """POST submit task, return taskId."""
     path = ENDPOINTS[task_type]["submit"]
-    label = {"i2v": "image-to-video", "t2v": "text-to-video", "omni": "omni-reference", "extend": "video-extension"}
+    label = {"i2v": "image-to-video", "t2v": "text-to-video", "extend": "video-extension", "anim": "animation", "a2ls": "audio-to-lip-sync"}
     if not quiet:
         print(f"Submitting {label[task_type]} task...", file=sys.stderr)
     result = client.post(path, json=body)
-    #print(f"client.post result: {result}")
-    task_id = result["question_id"]
+    # print(f"client.post result: {result}")
+    task_id = result["create_id"]
     if not quiet:
         print(f"Task submitted. taskId: {task_id}", file=sys.stderr)
     return task_id
 
 
-def do_poll(client: ChatArtClient, task_type: str, task_id: str,
+def do_poll(client: LitMediaClient, task_type: str, task_id: str,
             timeout: float, interval: float, quiet: bool) -> dict:
     """Poll until status is terminal or timeout is exceeded."""
-    path = ENDPOINTS[task_type]["query"] + f"?question_id={task_id}"
+    path = ENDPOINTS[task_type]["query"]
     if not quiet:
         print(
             f"Polling task {task_id} (timeout={timeout}s, interval={interval}s)...",
@@ -686,34 +648,56 @@ def download_video(url: str, output: str, quiet: bool) -> None:
         print(f"Downloaded: {output} ({size_mb:.1f} MB)", file=sys.stderr)
 
 
-def print_result(result: dict, args, client: ChatArtClient) -> None:
+def print_result(result: dict, args, client: LitMediaClient) -> None:
     """Print final result: video URLs by default, full JSON with --json."""
-    
-    if args.json:
-        print(json_mod.dumps(result, indent=2, ensure_ascii=False))
-        return
-    
-    cost = result.get("cost_credit", "N/A")
-    status = result.get("status", 0)
-    
-    print(f"status: {status}  cost: {cost} credits")
-    
-    # Extract video URL from message.url
-    message = result.get("message", {})
-    video_url = message.get("url", "") if isinstance(message, dict) else ""
-    
+    video_url = result.get("video_url", "")
+    video_num = result.get("video_num", 0)
+
     if args.output_dir and video_url:
         os.makedirs(args.output_dir, exist_ok=True)
         ext = "mp4"
-        time_name = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        out_path = os.path.join(args.output_dir, f"video_{time_name}.{ext}")
-        download_video(video_url, out_path, args.quiet)
-    
-    if status == 1 and video_url:
-        print(f" [1] video_url:{video_url}")
-    elif status != 1:
-        error_msg = result.get("error", "") or result.get("real_error", "Unknown error")
-        print(f"  [1] failed: {error_msg or 'Task failed'}")
+        if video_num > 1:
+            # For multiple videos, we assume the API returns a list of URLs in "video_url"
+            urls = result.get("child_data", [])
+            for idx, item in enumerate(urls):
+                # Extract video_url from the object (prefer down_video_url if available)
+                url = item.get("down_video_url") or item.get("video_url", "")
+                if not url:
+                    continue
+                time_name = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+                out_path = os.path.join(args.output_dir, f"video_{time_name}_{idx+1}.{ext}")
+                download_video(url, out_path, args.quiet)
+        else:
+            # 获取当前时间: 2023050911
+            time_name = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            out_path = os.path.join(args.output_dir, f"video_{time_name}.{ext}")
+            download_video(video_url, out_path, args.quiet)
+
+    if args.json:
+        print(json_mod.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        cost = result.get("cost_credit", "N/A")
+        print(f"status: {result.get('status')}  cost: {cost} credits")
+        
+        video_url = result.get("video_url", "")
+        error_msg = result.get("error", "") or result.get("real_error", "")
+        video_num = result.get("video_num", 0)
+        
+        if video_num > 1:
+            # Print all video URLs from child_data
+            urls = result.get("child_data", [])
+            for idx, item in enumerate(urls):
+                url = item.get("down_video_url") or item.get("video_url", "")
+                status = item.get("status", 0)
+                if url and status == 1:
+                    print(f" [{idx+1}] video_url:{url}")
+                else:
+                    error = item.get("error", "") or item.get("real_error", "Unknown error")
+                    print(f" [{idx+1}] failed: {error}")
+        elif video_url and result.get("status") == 1:
+            print(f" [1] video_url:{video_url}")
+        else:
+            print(f"  [1] failed: {error_msg or 'Unknown error'}")
 
 # ---------------------------------------------------------------------------
 # Argument definitions
@@ -722,21 +706,24 @@ def print_result(result: dict, args, client: ChatArtClient) -> None:
 def add_common_args(p):
     """Add arguments shared by all task types."""
     p.add_argument("--type", required=True, choices=TASK_TYPES,
-                   help="Task type: i2v (image-to-video), t2v (text-to-video), extend (video extension)")
-    p.add_argument("--model", default=None,
-                   help="Model name/ID (required for t2v and i2v; optional for others). See 'list-models' command for supported models. default value: None ")
+                   help="Task type: i2v (image-to-video), t2v (text-to-video), extend (video extension), anim (animation), or a2ls (audio-to-lip-sync)")
+    p.add_argument("--model", required=True,
+                   help="Model display name — REQUIRED, no default. Get exact names via "
+                        "'list-models --type <type>' and let the user pick; never guess a model name.")
     p.add_argument("--prompt", default=None,
                    help="Text prompt (required for t2v and omni)")
     p.add_argument("--aspect-ratio", default=None,
                    help='Aspect ratio, e.g. "16:9", "9:16", "1:1", "4:3", "3:4" ')
-    p.add_argument("--resolution", type=int, default=720, choices=[360, 480, 540, 720, 1080, 2160],
-                   help="Resolution (model-dependent): 360, 480, 540, 720, 1080, 2160")
+    p.add_argument("--resolution", type=int, default=720, choices=[360, 480, 540, 720, 768, 1080, 1440],
+                   help="Resolution (model-dependent): 360, 480, 540, 720, 768, 1080, 1440 (sent for the API as '2K', e.g. MiniMax-H3)")
     p.add_argument("--duration", type=int, default=None,
                    help="Video duration in seconds")
     p.add_argument("--count", type=int, default=1,
                    help="Number of videos to generate (1-4) default: 1")
-    p.add_argument("--sound", default=None, choices=["true", "false"],
-                   help='Native audio: "true"/"false". Only models with nativeAudio=True support this; may affect cost')
+    p.add_argument("--sound", default=None, choices=["on", "off"],
+                   help='Native audio switch for i2v/t2v (API field sound_effect_switch: '
+                        '"on"->1 enabled, "off"->0 disabled). Omit to keep the API default. '
+                        'Only models with nativeAudio=True support this; does not change price')
     p.add_argument("--input_image", default=None,
                    help="Input image for animation/a2ls (fileId or local path)")
 
@@ -749,6 +736,11 @@ def add_anim_args(p):
     """Add animation specific arguments."""
     p.add_argument("--style", default=None,
                    help="Animation style, e.g. '', 'comic', 'anime', '3d_animation', 'clay', 'cyberpunk'")
+    
+def add_a2ls_args(p):
+    """Add audio-to-Lip-sync specific arguments."""
+    p.add_argument("--input_sound", default=None,
+                   help="Input sound for audio-to-lip-sync (fileId or local path)")
 
 def add_i2v_args(p):
     """Add image-to-video specific arguments."""
@@ -757,7 +749,11 @@ def add_i2v_args(p):
     p.add_argument("--end-frame", default=None,
                    help="End frame image fileId or local path")
     p.add_argument("--ref-images", nargs="+", default=None,
-                   help="Reference image fileIds or local paths (multi-image mode, >=2)")
+                   help="Reference image fileIds/URLs/local paths (multi-image reference mode; max count is model-dependent)")
+    p.add_argument("--ref-videos", nargs="+", default=None,
+                   help="Reference video fileIds/URLs/local paths (video-reference mode; max count is model-dependent)")
+    p.add_argument("--ref-audios", nargs="+", default=None,
+                   help="Reference audio fileIds/URLs/local paths (voice-reference mode; max count is model-dependent)")
 
 
 def add_omni_args(p):
@@ -795,74 +791,66 @@ def validate_args(args, parser):
             parser.error("--model is required for text-to-video (t2v)")
         if not args.prompt:
             parser.error("--prompt is required for text-to-video (t2v)")
-    elif args.type == "omni":
-        if not args.model:
-            parser.error("--model is required for omni reference")
-        if not args.prompt:
-            parser.error("--prompt is required for omni reference")
-        if not args.ref_images:
-            parser.error("--ref-images is required for omni reference (1-9 images)")
+    # elif args.type == "omni":
+    #     if not args.model:
+    #         parser.error("--model is required for omni reference")
+    #     if not args.prompt:
+    #         parser.error("--prompt is required for omni reference")
     elif args.type == "i2v":
-        if not args.first_frame and not args.ref_images:
-            parser.error("--first-frame or --ref-images is required for image-to-video (i2v)")
-
-        # Validate inputMode compatibility
-        if args.model:
-            registry = MODEL_REGISTRY.get(args.type, {})
-            if args.model in registry:
-                model_info = registry[args.model]
-                supported_modes = model_info.get("inputMode", ["first_end"])
-                
-                # Ensure supported_modes is a list (for backward compatibility)
-                if isinstance(supported_modes, str):
-                    supported_modes = [supported_modes]
-                
-                # Count images
-                ref_count = len(args.ref_images) if args.ref_images else 0
-                frame_count = (1 if args.first_frame else 0) + (1 if args.end_frame else 0)
-                total_images = ref_count + frame_count
-                
-                # Determine which mode the user is trying to use
-                using_first_end = frame_count > 0
-                using_omni = ref_count > 0
-                
-                # Validate based on the mode being used
-                if using_first_end:
-                    # User wants first/last frame mode
-                    if "first_last_frames" not in supported_modes and "single_image" not in supported_modes:
-                        print(f"Error: Model '{args.model}' does not support first/last frame mode.", file=sys.stderr)
-                        print(f"Supported modes: {', '.join(supported_modes)}", file=sys.stderr)
-                        sys.exit(1)
-                    if total_images > 2:
-                        print(f"Error: First/last frame mode supports max 2 images.", file=sys.stderr)
-                        print(f"You provided {total_images} image(s).", file=sys.stderr)
-                        if total_images >= 3:
-                            print(f"For {total_images} images, please use --type omni with a model that supports omni_reference mode.", file=sys.stderr)
-                        sys.exit(1)
-                
-                elif using_omni:
-                    # User wants omni reference mode
-                    if "omni_reference" not in supported_modes:
-                        print(f"Error: Model '{args.model}' does not support omni reference mode.", file=sys.stderr)
-                        print(f"Supported modes: {', '.join(supported_modes)}", file=sys.stderr)
-                        if total_images >= 3:
-                            print(f"For {total_images} images, please use Seedance 2.0 or HappyHorse 1.0.", file=sys.stderr)
-                        sys.exit(1)
-                
-                else:
-                    # No images provided - should have been caught earlier
-                    pass
+        has_ref = bool(args.ref_images or args.ref_videos or args.ref_audios)
+        if not args.first_frame and not has_ref:
+            parser.error(
+                "--first-frame or at least one of --ref-images/--ref-videos/--ref-audios "
+                "is required for image-to-video (i2v)"
+            )
+        if has_ref and (args.first_frame or args.end_frame):
+            parser.error(
+                "reference mode (--ref-*) and frame mode (--first-frame/--end-frame) "
+                "are mutually exclusive for image-to-video (i2v)"
+            )
+        spec = MODEL_REGISTRY.get("i2v", {}).get(args.model)
+        if spec:
+            for flag, cap_key, values in (
+                ("--ref-images", "refImages", args.ref_images),
+                ("--ref-videos", "refVideos", args.ref_videos),
+                ("--ref-audios", "refAudios", args.ref_audios),
+            ):
+                if not values:
+                    continue
+                cap = spec.get(cap_key, 0)
+                if cap == 0:
+                    parser.error(f"model '{args.model}' does not support {flag}")
+                if len(values) > cap:
+                    parser.error(
+                        f"model '{args.model}' supports at most {cap} {flag} "
+                        f"entries (got {len(values)})"
+                    )
     elif args.type == "extend":
         if not args.input_video:
             parser.error("--input_video is required for video extension")
     elif args.type == "anim":
         if not args.input_image:
             parser.error("--input_image is required for animation")
+    elif args.type == "a2ls":
+        if not args.input_image:
+            parser.error("--input_image is required for audio-to-lip-sync")
+        if not args.input_sound:
+            parser.error("--input_sound is required for audio-to-lip-sync")
 
     
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
+
+def _fmt_refs(spec):
+    """Format multi-reference caps as 'img / vid / aud'; '-' means unsupported."""
+    ri = spec.get("refImages", 0)
+    rv = spec.get("refVideos", 0)
+    ra = spec.get("refAudios", 0)
+    if not (ri or rv or ra):
+        return "-"
+    return f"{ri or '-'} / {rv or '-'} / {ra or '-'}"
+
 
 def cmd_list_models(args, parser):
     """Print supported models and their parameter constraints."""
@@ -876,59 +864,57 @@ def cmd_list_models(args, parser):
         print(json_mod.dumps(registry, indent=2, ensure_ascii=False))
         return
 
-    type_label = {"i2v": "Image-to-Video", "t2v": "Text-to-Video", "omni": "Omni-Reference", "extend": "Video Extension"}
+    type_label = {"i2v": "Image-to-Video", "t2v": "Text-to-Video", "extend": "Video Extension",
+                  "anim": "Animation", "a2ls": "Audio-to-Lip-sync"}
     print(f"\n{type_label.get(task_type, task_type)} — Supported Models\n")
-    print(f"{'Model':<25} {'Input Mode':<18} {'Aspect Ratio':<35} {'Resolution':<22} {'Duration':<32} {'Audio'}")
-    print("-" * 145)
+    is_i2v = task_type == "i2v"
+    header = f"{'Model':<25} {'Aspect Ratio':<35} {'Resolution':<22} {'Duration':<32} {'Audio':<6}"
+    if is_i2v:
+        header += "Refs(img/vid/aud)"
+    print(header)
+    print("-" * (145 if is_i2v else 120))
     for name, spec in registry.items():
         ar = ", ".join(spec["aspectRatio"]) if spec["aspectRatio"] else "by image" if task_type == "i2v" else "N/A"
         res = ", ".join(str(r) for r in spec["resolution"]) if spec["resolution"] else "N/A"
         dur = _parse_duration_spec(spec["duration"])
         audio = "Yes" if spec.get("nativeAudio") else "No"
-        input_mode = spec.get("inputMode", "N/A")
-        # Map inputMode to user-friendly labels (handle both list and string)
-        mode_labels = {
-            "single": "Single (1)",
-            "first_end": "First/End (1-2)",
-            "omni": "Omni (1-9)"
-        }
-        
-        # Handle list of modes
-        if isinstance(input_mode, list):
-            mode_label = ", ".join([mode_labels.get(m, m) for m in input_mode])
-        else:
-            mode_label = mode_labels.get(input_mode, input_mode)
-        
-        print(f"{name:<25} {mode_label:<18} {ar:<35} {res:<22} {dur:<32} {audio}")
+        line = f"{name:<25} {ar:<35} {res:<22} {dur:<32} {audio:<6}"
+        if is_i2v:
+            line += _fmt_refs(spec)
+        print(line)
     print()
+    if is_i2v:
+        print('Refs column = max entries per mode for --ref-images / --ref-videos / --ref-audios ("-" = unsupported).')
+        print("Frame mode (--first-frame/--end-frame) and reference mode (--ref-*) are mutually exclusive.\n")
 
 
 def cmd_estimate_cost(args, parser):
     """Print estimated cost for a given model + parameters."""
-    sound_on = args.sound == "true" if args.sound else False
+    sound_on = args.sound == "on" if args.sound else False
     cost = estimate_cost(args.model, args.resolution, args.duration, sound_on, args.count or 1)
     if cost is None:
-        print(f"Cannot estimate cost for model '{args.model}' with given parameters.", file=sys.stderr)
-        print("Use list-models to see available models, or check references/api-docs.md.", file=sys.stderr)
+        print(f"Cannot estimate cost for model '{args.model}' with given parameters "
+              "— the model name may be wrong or the params unsupported.", file=sys.stderr)
+        print("Run list-models, show the model list to the user and let the user "
+              "pick, then re-run with the EXACT display name.", file=sys.stderr)
         sys.exit(1)
     count = args.count or 1
     unit = round(cost / count, 2)
     if args.json:
         print(json_mod.dumps({"model": args.model, "resolution": args.resolution,
-                               "duration": args.duration, "sound": args.sound or "false",
+                               "duration": args.duration, "sound": args.sound or "off",
                                "count": count, "unitCost": unit, "totalCost": cost}))
     else:
         print(f"model: {args.model}  resolution: {args.resolution or 'default'}  "
-              f"duration: {args.duration}s  sound: {args.sound or 'false'}  count: {count}")
+              f"duration: {args.duration}s  sound: {args.sound or 'off'}  count: {count}")
         print(f"estimated unit cost: {unit} credits")
         print(f"estimated total cost: {cost} credits")
 
 
 def cmd_run(args, parser):
     """Submit task then poll until done — full flow (default)."""
-    #print("cmd_run Submitting task...")
     validate_args(args, parser)
-    client = ChatArtClient()
+    client = LitMediaClient()
     body = build_body(args, client)
     print(f"Request body: {json_mod.dumps(body, ensure_ascii=False)}", file=sys.stderr)
     # Debug: print the request body to stderr
@@ -944,9 +930,8 @@ def cmd_run(args, parser):
 
 def cmd_submit(args, parser):
     """Submit task only — print taskId and exit immediately."""
-    #print("Submitting task...")
     validate_args(args, parser)
-    client = ChatArtClient()
+    client = LitMediaClient()
     body = build_body(args, client)
     task_id = do_submit(client, args.type, body, args.quiet)
     print(task_id)
@@ -954,7 +939,7 @@ def cmd_submit(args, parser):
 
 def cmd_query(args, parser):
     """Poll an existing task by taskId until done or timeout."""
-    client = ChatArtClient()
+    client = LitMediaClient()
     try:
         result = do_poll(
             client, args.type, args.task_id,
@@ -982,7 +967,7 @@ def cmd_query(args, parser):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ChatArt Video Generation — i2v / t2v /omni / extend.",
+        description="LitMedia Video Generation — i2v / t2v / extend / anim / a2ls.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 AGENT WORKFLOW RULES:
@@ -990,35 +975,53 @@ AGENT WORKFLOW RULES:
   2. Only use `query` if `run` timed out and you have a taskId to resume.
   3. `query` polls continuously (not once) until done or --timeout.
   4. NEVER hand a pending taskId back to the user — always poll to completion.
+  5. NO DEFAULT MODEL — ALWAYS run `list-models --type <type>` first,
+     show the model list to the user, and use the exact display name the
+     user picked. NEVER guess or hardcode a model name.
 
 Task types:
-  i2v   Image-to-Video      (first/end frame + prompt)
+  i2v   Image-to-Video      (first/end frame, OR reference mode via
+                             --ref-images / --ref-videos / --ref-audios + prompt)
   t2v   Text-to-Video       (model + prompt, no image needed)
   extend Video Extension    (input video + prompt)
   anim   Animation           (input image + style + prompt)
+  a2ls   Audio-to-Lip-sync   (input image + input sound + prompt)
 
 Examples:
-  # List available models for a task type
+  # Step 1 — List available models, let the user pick one
   python video_gen.py list-models --type t2v
 
-  # Image-to-video with first frame
-  python video_gen.py run --type i2v --model "LitAI 5" \\
+  # Step 2 — Image-to-video with first frame (model = exact name chosen by user)
+  python video_gen.py run --type i2v --model "<name from list-models>" \\
       --first-frame photo.png --prompt "A rotating product" --resolution 1080
 
+  # Image-to-video with multi-image reference (check Refs column in list-models first)
+  python video_gen.py run --type i2v --model "<name from list-models>" \\
+      --ref-images a.png b.png c.png --prompt "Characters from the images dancing"
+
+  # Image-to-video with reference video + audio (voice cloning / style reference)
+  python video_gen.py run --type i2v --model "<name from list-models>" \\
+      --ref-images a.png --ref-videos clip.mp4 --ref-audios voice.mp3 \\
+      --prompt "Reproduce the motion in the video, speak with the voice in the audio"
+
   # Text-to-video
-  python video_gen.py run --type t2v --model "LitAI 5" \\
+  python video_gen.py run --type t2v --model "<name from list-models>" \\
       --prompt "A futuristic city" --aspect-ratio "16:9" --duration 5
 
   # Video extension
-  python video_gen.py run --type extend --model "LitAI 5" \\
+  python video_gen.py run --type extend --model "<name from list-models>" \\
       --input_video "input.mp4" --prompt "video description" --duration 5 
 
   # Animation with style
-  python video_gen.py run --type anim --model "LitAI 5" \\
+  python video_gen.py run --type anim --model "<name from list-models>" \\
       --input_image "input.png" --prompt "video description" --duration 5 --style "cyberpunk" --resolution 720 
 
+  # Audio-to-lip-sync
+  python video_gen.py run --type a2ls --model "<name from list-models>" \\
+      --input_image "input.png" --input_sound "audio.mp3" 
+
   # Estimate cost before running
-  python video_gen.py estimate-cost --model "LitAI 5" \\
+  python video_gen.py estimate-cost --model "<name from list-models>" \\
       --resolution 1080 --duration 5 --sound on --count 2
 
   # Query a timed-out task
@@ -1036,6 +1039,7 @@ Examples:
     # add_omni_args(p_run)
     add_extend_args(p_run)
     add_anim_args(p_run)
+    add_a2ls_args(p_run)
     add_poll_args(p_run)
     add_output_args(p_run)
 
@@ -1045,6 +1049,7 @@ Examples:
     add_i2v_args(p_submit)
     add_extend_args(p_submit)
     add_anim_args(p_submit)
+    add_a2ls_args(p_submit)
     # add_omni_args(p_submit)
     add_output_args(p_submit)
 
@@ -1069,7 +1074,7 @@ Examples:
     p_cost.add_argument("--model", required=True, help="Model display name")
     p_cost.add_argument("--resolution", type=int, required=True, default="720", help="Resolution")
     p_cost.add_argument("--duration", type=int, required=True, help="Duration in seconds")
-    p_cost.add_argument("--sound", default="true", choices=["true", "false"], help="Sound true/false (default: true)")
+    p_cost.add_argument("--sound", default=None, choices=["on", "off"], help="Sound on/off")
     p_cost.add_argument("--count", type=int, required=True, default=1, help="generatingCount (1-4)")
     p_cost.add_argument("--json", action="store_true", help="Output as JSON")
 

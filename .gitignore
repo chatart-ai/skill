@@ -1,3 +1,7 @@
-*.pyc
+__pycache__/
+*.py[cod]
+scripts/__pycache__/
+scripts/shared/__pycache__/
 /.idea
-/logs
+/scripts/.idea
+/scripts/.vscode

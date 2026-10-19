@@ -1,6 +1,6 @@
-"""Upload local files to ChatArt OSS and return file url.
+"""Upload local files to LitMedia OSS and return file url.
 
-Used internally by video_mimic, ai_image and video_gen to auto-upload local paths.
+Used internally by video_mimic, ai_image, avatar4 and video_gen to auto-upload local paths.
 """
 
 import os
@@ -12,8 +12,7 @@ import requests
 import alibabacloud_oss_v2 as oss
 
 from datetime import datetime
-from shared.client import ChatArtClient, BASE_URL
-from shared.download import download_file
+from shared.client import LitMediaClient
 
 SUPPORTED_FORMATS = {
     "png", "jpg", "jpeg", "bmp", "webp",
@@ -32,13 +31,22 @@ def detect_format(file_path: str) -> str:
         )
     return ext
 
-def get_oss_security_token(client: ChatArtClient | None = None) -> dict:
+def get_oss_security_token(client: LitMediaClient | None = None) -> dict:
 
     if client is None:
-        client = ChatArtClient()
+        client = LitMediaClient()
 
-    url = f"{BASE_URL}/web/file/get-upload-policy"
-    resp = requests.post(url, headers=client.headers)
+    url = f"https://litvideo-api.litmedia.ai/lit-video/get-sls"
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Monimaster-Device-Code": "",
+        "Monimaster-Api-Version": "",
+        "Monimaster-Device-Type": "110"
+    }
+
+    params = client.params
+
+    resp = requests.post(url, headers=headers, params=params)
     resp.raise_for_status()
     print(f"{resp.status_code}: {resp.text}")
     return resp.json()
@@ -49,17 +57,17 @@ def get_oss_file_path(file_name: str):
     """
     data_str = datetime.now().strftime("%Y%m%d")
     file_name = os.path.basename(file_name)
-    return f'chat-skill-upload/{data_str}/{file_name}'
+    return f'{data_str}/{file_name}'
 
 def put_file(cred_json: dict, file_path: str) -> tuple:
+
     is_success = False
-    sts_access_key_id  = cred_json.get("data").get("Credentials").get("AccessKeyId")
-    sts_access_key_secret  = cred_json.get("data").get("Credentials").get("AccessKeySecret")
-    sts_security_token  = cred_json.get("data").get("Credentials").get("SecurityToken")
-    # oss_show_domain = cred_json.get("data").get("Credentials").get("ossShowDomain")
-    sts_region = cred_json.get("data").get("Credentials").get("region")
-    oss_bucket = cred_json.get("data").get("Credentials").get("bucket")
-    oss_show_domain = f"https://{oss_bucket}.{sts_region}.aliyuncs.com/"
+    sts_access_key_id  = cred_json.get("data").get("aliyun").get("AccessKeyId")
+    sts_access_key_secret  = cred_json.get("data").get("aliyun").get("AccessKeySecret")
+    sts_security_token  = cred_json.get("data").get("aliyun").get("SecurityToken")
+    oss_show_domain = cred_json.get("data").get("aliyun").get("ossShowDomain")
+    sts_region = cred_json.get("data").get("aliyun").get("Endpoint")
+    oss_bucket = cred_json.get("data").get("aliyun").get("Bucket")
 
     # 创建静态凭证提供者，显式设置临时访问密钥AccessKey ID和AccessKey Secret，以及STS安全令牌
     credentials_provider = oss.credentials.StaticCredentialsProvider(
@@ -106,7 +114,7 @@ def put_file(cred_json: dict, file_path: str) -> tuple:
     return is_success, oss_file_url
 
 
-def upload_file(file_path: str, *, quiet: bool = False, client: ChatArtClient | None = None) -> str:
+def upload_file(file_path: str, *, quiet: bool = False, client: LitMediaClient | None = None) -> str:
     """Three-step upload: get credential -> PUT to S3 -> verify.
 
     Returns dict with keys: fileId, fileName, format.
@@ -123,55 +131,27 @@ def upload_file(file_path: str, *, quiet: bool = False, client: ChatArtClient | 
     if is_success is not True:
         raise RuntimeError("Upload files failed")
 
-    if client.is_debug:
-        oss_file_url = oss_file_url.replace("https://files-chat-ai-ifonelab-net.oss-cn-hongkong.aliyuncs.com/",
-                                            "https://files-chatartpro.ifonelab.net/")
-    else:
-        oss_file_url = oss_file_url.replace("https://files-chat-ai-figcube-com.oss-us-west-1.aliyuncs.com/",
-                                            "https://files.chatartpro.com/")
     return oss_file_url
 
-def resolve_local_file(file_ref: str, *, quiet: bool = False, client: ChatArtClient | None = None) -> str:
-    """If file_ref is a local path, upload it and return fileId.
-    If it's an external URL (http/https), download and upload to OSS.
-    If it's already an OSS URL (files-chatartpro.ifonelab.net or files.chatartpro.com), pass through."""
+def resolve_local_file(file_ref: str, *, quiet: bool = False, client: LitMediaClient | None = None) -> str:
+    """If file_ref is a local path, upload it and return fileId. Otherwise pass through."""
 
-    # 自家CDN的URL，直接透传
-    if file_ref.startswith(("https://files-chatartpro.ifonelab.net/", "https://files.chatartpro.com/")):
-        return file_ref
+    is_url = file_ref.startswith(("http://", "https://"))
+    if not is_url:
+        if not os.path.exists(file_ref):
+            raise FileNotFoundError(f"Local file not found: {file_ref}")
 
-    # 外链URL，下载到临时文件再上传OSS
-    if file_ref.startswith(("http://", "https://")):
-        import tempfile
-        ext = os.path.splitext(file_ref.split("?")[0])[1] or ".bin"
-        time_name = datetime.now().strftime("%Y%m%d%H%M%S")
-        rand_suffix = hashlib.md5(str(random.random()).encode()).hexdigest()[:8]
-        temp_dir = tempfile.gettempdir()
-        temp_path = os.path.join(temp_dir, f"upload_{time_name}_{rand_suffix}{ext}")
-        try:
-            download_file(file_ref, temp_path, quiet=quiet)
-            oss_file_url = upload_file(temp_path, quiet=quiet, client=client)
-            return oss_file_url
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        return file_ref  # 不可能走到这里，但return防止警告
+        if not os.path.isfile(file_ref):
+            raise ValueError(f"Path is not a file: {file_ref}")
 
-    # 本地文件路径
-    if not os.path.exists(file_ref):
-        raise FileNotFoundError(f"Local file not found: {file_ref}")
+        if not quiet:
+            print(f"Detected local file, uploading: {file_ref}", file=sys.stderr)
 
-    if not os.path.isfile(file_ref):
-        raise ValueError(f"Path is not a file: {file_ref}")
+        fmt = detect_format(file_ref)
+        oss_file_url = upload_file(file_ref, quiet=quiet, client=client)
+        return oss_file_url
 
-    if not quiet:
-        print(f"Detected local file, uploading: {file_ref}", file=sys.stderr)
-
-    detect_format(file_ref)  # 验证格式
-    oss_file_url = upload_file(file_ref, quiet=quiet, client=client)
-    return oss_file_url
+    return file_ref
 
 if __name__ == '__main__':
-    client = ChatArtClient()
-    str_path = resolve_local_file("C:/Users/xiekun/Pictures/8X_66.jpg", quiet=True, client=client)
-    print(str_path)
+    pass

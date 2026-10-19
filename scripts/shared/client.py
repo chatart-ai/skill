@@ -1,4 +1,4 @@
-"""Reusable HTTP client for the ChatArt API with auth and task polling."""
+"""Reusable HTTP client for the LitMedia API with auth and task polling."""
 
 import sys
 import time
@@ -9,8 +9,7 @@ from enum import IntEnum
 from .config import load_config
 from typing import Any, Optional
 
-BASE_URL = "https://api.chatartpro.com"
-#BASE_URL = "https://chatartpro-api.ifonelab.net"
+BASE_URL = "https://litvideo-api.litmedia.ai"
 
 class TaskStatus(IntEnum):
     IN_PROGRESS = 0
@@ -37,7 +36,7 @@ RESPONSE_CODES = {
     "4006": "Request refuse",
     "4007": "Exists unfinished task, please wait",
     "4100": "Credit not enough",
-    "5000": "Internal server error, please report at https://www.chatartpro.com with task type and taskId (e.g. 'i2v task failed, taskId: abc123')",
+    "5000": "Internal server error, please report at https://www.LitMedia.ai with task type and taskId (e.g. 'avatar4 task failed, taskId: abc123')",
     "5001": "Feign invoke error",
     "5003": "Server is busy, please try again later",
     "5004": "I/O error occurred",
@@ -45,8 +44,8 @@ RESPONSE_CODES = {
     "6001": "Security problem detect",
 }
 
-class ChatArtError(Exception):
-    """Raised when the ChatArt API returns a non-200 response code."""
+class LitMediaError(Exception):
+    """Raised when the LitMedia API returns a non-200 response code."""
 
     def __init__(self, code: str, message: str):
         self.code = code
@@ -54,12 +53,12 @@ class ChatArtError(Exception):
         super().__init__(f"[{code}] {message}")
 
 
-class ChatArtClient:
-    """Authenticated HTTP client for ChatArt API endpoints.
+class LitMediaClient:
+    """Authenticated HTTP client for LitMedia API endpoints.
 
     Usage::
 
-        client = ChatArtClient()
+        client = LitMediaClient()
         resp = client.post("/v1/photo_avatar/task/submit", json={...})
         result = client.poll_task("/v1/photo_avatar/task/query", task_id)
     """
@@ -70,83 +69,79 @@ class ChatArtClient:
         else:
             cfg = load_config()
             self._api_key = cfg["api_key"]
-            self._uid = cfg["uid"]
-        self.is_debug = False
 
     @property
     def headers(self) -> dict:
         return {
-            "Xskill-Authorization": f"Bearer {self._api_key}",
-            "Identity-Id": f"{self._uid}",
+            "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
-            "Language": "EN",
-            "Skill": "1",
-            "App-Type": "2"
+            "Monimaster-Device-Code": "",
+            "Monimaster-Api-Version": "",
+            "Monimaster-Device-Type": "110"
         }
 
-    # @property
-    # def params(self) -> dict:
+    @property
+    def params(self) -> dict:
 
-    #     timeStamp = str(int(time.time()))
-    #     randomStr = str(random.randint(0, 100000000))
-    #     secret = 'uN3lu01bFtumul8W'
-    #     sha1 = hashlib.sha1((timeStamp + randomStr + secret).encode('utf-8')).hexdigest()
-    #     signature = hashlib.md5(sha1.encode('utf-8')).hexdigest().upper()
+        timeStamp = str(int(time.time()))
+        randomStr = str(random.randint(0, 100000000))
+        secret = 'uN3lu01bFtumul8W'
+        sha1 = hashlib.sha1((timeStamp + randomStr + secret).encode('utf-8')).hexdigest()
+        signature = hashlib.md5(sha1.encode('utf-8')).hexdigest().upper()
 
-    #     params = {
-    #         "timeStamp": timeStamp,
-    #         "randomStr": randomStr,
-    #         "signature": signature,
-    #         "app_type": 2
-    #     }
+        params = {
+            "timeStamp": timeStamp,
+            "randomStr": randomStr,
+            "signature": signature,
+            "app_type": 2
+        }
 
-    #     return params
+        return params
 
     def _check(self, data: dict) -> dict:
         code = str(data.get("code", ""))
         # print(f"[DEBUG]:check = {data}")
         if code != "200":
             msg = data.get("message", RESPONSE_CODES.get(code, "Unknown error") + f", response: {data}")
-            raise ChatArtError(code, msg)
+            raise LitMediaError(code, msg)
         return data.get("data", data)
 
     def get(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, **kwargs) -> dict:
         url = f"{BASE_URL}{path}" if path.startswith("/") else path
-        # final_params = params if params is not None else self.params
 
-        #print(f"[DEBUG]: url={url}")
-        #print(f"[DEBUG]: json={json}")
-        #print(f"[DEBUG]: headers={self.headers}")
+        final_params = params if params is not None else self.params
+
+        # print(f"[DEBUG]: url={url}")
+        # print(f"[DEBUG]: json={json}")
+        # print(f"[DEBUG]: headers={self.headers}")
         # print(f"[DEBUG]: params={final_params}")
-        resp = requests.get(url, headers=self.headers, json=json, **kwargs)
-        #print(f"[DEBUG]: resp={resp.json()}")
+        resp = requests.get(url, headers=self.headers, params=final_params, json=json, **kwargs)
         resp.raise_for_status()
         return self._check(resp.json())
 
     def post(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, **kwargs) -> dict:
         url = f"{BASE_URL}{path}" if path.startswith("/") else path
 
-        # final_params = params if params is not None else self.params
+        final_params = params if params is not None else self.params
 
-        #print(f"[DEBUG]: url={url}")
-        #print(f"[DEBUG]: json={json}")
-        #print(f"[DEBUG]: headers={self.headers}")
+        # print(f"[DEBUG]: url={url}")
+        # print(f"[DEBUG]: json={json}")
+        # print(f"[DEBUG]: headers={self.headers}")
         # print(f"[DEBUG]: params={final_params}")
-        resp = requests.post(url, headers=self.headers, json=json, **kwargs)
-        #print(f"[DEBUG]: resp={resp.json()}")
+        resp = requests.post(url, headers=self.headers, params=final_params, json=json, **kwargs)
         resp.raise_for_status()
         return self._check(resp.json())
     
     def post_nocheck(self, path: str, json: Optional[dict] = None, params: Optional[dict] = None, **kwargs) -> dict:
         url = f"{BASE_URL}{path}" if path.startswith("/") else path
 
-        # final_params = params if params is not None else self.params
+        final_params = params if params is not None else self.params
 
-        #print(f"[DEBUG]: url={url}")
+        # print(f"[DEBUG]: url={url}")
         # print(f"[DEBUG]: json={json}")
         # print(f"[DEBUG]: headers={self.headers}")
         # print(f"[DEBUG]: params={final_params}")
-        resp = requests.post(url, headers=self.headers, json=json, **kwargs)
+        resp = requests.post(url, headers=self.headers, params=final_params, json=json, **kwargs)
         resp.raise_for_status()
         # print(f"[DEBUG]: resp={resp.json()}")
         return resp.json()
@@ -164,7 +159,7 @@ class ChatArtClient:
         return self._check(resp.json())
 
     def shorten_url(self, long_url: str) -> str:
-        """Convert a long URL to a short URL via the ChatArt short-URL API.
+        """Convert a long URL to a short URL via the LitMedia short-URL API.
 
         Returns the short URL on success, or the original URL on any failure.
         """
@@ -197,12 +192,12 @@ class ChatArtClient:
         task_id: str,
         *,
         interval: float = 30.0,
-        timeout: float = 1200.0,
+        timeout: float = 600.0,
         verbose: bool = True,
     ) -> dict:
         """Poll a task endpoint until status is 'success' or 'failed'.
 
-        Returns the result dict on success; raises ChatArtError on failure.
+        Returns the result dict on success; raises LitMediaError on failure.
         """
         start = time.time()
         while True:
@@ -211,9 +206,8 @@ class ChatArtClient:
                 raise TimeoutError(
                     f"Task {task_id} did not complete within {timeout}s"
                 )
-            resp = self.get(path, json={"question_id": task_id})
-            # resp_data = resp.get("data")
-            print(f"data.status = {resp.get('status')}")
+
+            resp = self.post(path, json={"create_id": task_id})
             status = TaskStatus(resp.get("status"))
 
             if verbose:
@@ -225,6 +219,6 @@ class ChatArtClient:
             if status == TaskStatus.COMPLETED:
                 return resp
             elif status == TaskStatus.FAILED:
-                raise ChatArtError("TASK_FAILED", resp.get("error", "Task failed"))
+                raise LitMediaError("TASK_FAILED", resp.get("error", "Task failed"))
 
             time.sleep(interval)

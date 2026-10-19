@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Character Replace in Videos with Scene Consistency using ChatArt Common Task APIs.
+"""Character Replace in Videos with Scene Consistency using LitMedia Common Task APIs.
 
 ## AGENT INSTRUCTIONS — READ FIRST
 - Default workflow: ALWAYS use `run` (submit + auto-poll).
   Do NOT ask the user to run query manually.
+- NO DEFAULT MODEL. Model names in docs may be outdated or wrong.
+  Before ANY generation, run `list-models --type <type>` to get the
+  current supported model list, show it to the user, and let the user
+  pick. Always pass the EXACT display name returned by `list-models`.
+  If a model is NOT found, the script aborts (nothing is submitted, no
+  default fallback) and prints the available models — show that list to
+  the user and re-run with the name they pick.
 - Only use `query` when `run` has already timed out and a taskId exists,
   or when the user explicitly provides a taskId to resume.
 - When using `query`, keep polling (default timeout=600s) until
@@ -16,13 +23,15 @@ Supported task types:
     Body_Only    — Use the image's person in the video, keep the video's background.
 
 Subcommands:
-    run     Submit task AND poll until done — DEFAULT, use this first
-    submit  Submit only, print taskId, exit — use for parallel batch jobs
-    query   Poll an existing taskId until done (or timeout) — use for recovery
+    run           Submit task AND poll until done — DEFAULT, use this first
+    submit        Submit only, print taskId, exit — use for parallel batch jobs
+    query         Poll an existing taskId until done (or timeout) — use for recovery
+    list-models   Show supported models and parameter constraints
 
 Usage:
-    python video_mimic.py run  --type Full_Scene  --first-frame <fileId|path> [options]
-    python video_mimic.py run  --type Body_Only  --model "Kling V3.0" [options]
+    python video_mimic.py list-models --type <Full_Scene|Body_Only>   # ALWAYS run first; user picks
+    python video_mimic.py run  --type Full_Scene  --model "<exact display name from list-models>" [options]
+    python video_mimic.py run  --type Body_Only  --model "<exact display name from list-models>" [options]
     python video_mimic.py submit --type <Full_Scene|Body_Only> [task-specific options]
     python video_mimic.py query --task-id <taskId> [options]
 """
@@ -35,23 +44,22 @@ import time
 import uuid
 import tempfile
 import datetime
-import requests as req
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from typing import Any
-from shared.client import ChatArtClient, ChatArtError, TaskStatus
+from shared.client import LitMediaClient, LitMediaError, TaskStatus
 from shared.upload import resolve_local_file
 from shared.media_util import MediaUtils
 
 TASK_TYPES = ("Full_Scene", "Body_Only")
 
 ENDPOINTS = {
-    "submit": "/web/video/generate-video",
-    "query": "/web/video/get-video-task",
+    "submit": "/lit-video/video-replace-character",
+    "query": "/lit-video/do-process",
 }
 
-DEFAULT_TIMEOUT = 1200
+DEFAULT_TIMEOUT = 600
 DEFAULT_INTERVAL = 60
 
 # ---------------------------------------------------------------------------
@@ -62,6 +70,7 @@ DEFAULT_INTERVAL = 60
 
 FULL_SCENE_MODELS = {
     "Kling V3.0":       {"resolution": [480, 720]},
+    "Seedance 2.0":     {"resolution": [480]},
     "Wan 2.2":          {"resolution": [480, 720]},
 }
 
@@ -80,15 +89,17 @@ MODEL_REGISTRY = {"Full_Scene": FULL_SCENE_MODELS, "Body_Only": BODY_ONLY_MODELS
 
 _RATE = {
     "Kling V3.0":           {"unitCost" :12, "resolution" : {480: 1, 720: 1.5}},
+    "Seedance 2.0":         {"unitCost" :1, "resolution" : {480: 3}},
     "Wan 2.2":              {"unitCost" :6, "resolution" : {480: 1, 720: 2}},
 }
 
 MODEL_MAP = {
-    "Wan 2.2": "wan-2.2",
-    "Kling V3.0": "kling-animate",
+    "Wan 2.2": 45,
+    "Kling V3.0": 46,
+    "Seedance 2.0": 51,
 }
 
-def get_model_id_by_name(model_name: str) -> str | None:
+def get_model_id_by_name(model_name: str) -> int | None:
     """
     根据模型名称获取对应的模型 ID（忽略大小写比较）。
     
@@ -104,6 +115,23 @@ def get_model_id_by_name(model_name: str) -> str | None:
             return model_id
     
     return None
+
+def _fail_unknown_model(model: str, task_type: str) -> None:
+    """模型找不到时：打印该任务类型的可用模型清单并中止（绝不回退默认模型）。
+
+    Agent 必须把清单展示给用户、由用户重新选择，再用精确 display name 重跑。
+    """
+    registry = MODEL_REGISTRY.get(task_type, {})
+    print(f"ERROR: model '{model}' not found for type '{task_type}'. "
+          "Task was NOT submitted and NO default model was used.", file=sys.stderr)
+    if registry:
+        print(f"Available models for {task_type} — show this list to the user "
+              "and re-run with the EXACT display name the user picks:",
+              file=sys.stderr)
+        for name in sorted(registry):
+            print(f"  - {name}", file=sys.stderr)
+    print(f"(constraints detail: list-models --type {task_type})", file=sys.stderr)
+    sys.exit(2)
 
 
 def estimate_cost(model: str, resolution: int | None, duration: int) -> float | None:
@@ -130,13 +158,7 @@ def validate_model_params(task_type: str, model: str,
     """Warn on stderr if parameters are incompatible with model constraints."""
     registry = MODEL_REGISTRY.get(task_type, {})
     if model not in registry:
-        if not quiet:
-            known = ", ".join(sorted(registry.keys()))
-            print(
-                f"Warning: unknown model '{model}' for {task_type}. "
-                f"Known models: {known}",
-                file=sys.stderr,
-            )
+        _fail_unknown_model(model, task_type)
         return
 
     spec = registry[model]
@@ -159,7 +181,7 @@ def validate_model_params(task_type: str, model: str,
 # Helpers
 # ---------------------------------------------------------------------------
 
-def resolve_file(client: ChatArtClient, file_ref: str, quiet: bool) -> str:
+def resolve_file(client: LitMediaClient, file_ref: str, quiet: bool) -> str:
     """If file_ref looks like a local path, upload it and return fileId."""
     return resolve_local_file(file_ref, quiet=quiet, client=client)
 
@@ -177,47 +199,44 @@ def get_video_duration(file_ref: str, quiet: bool) -> float:
     return MediaUtils.get_duration(local_file)
 
 
-def build_full_scene_body(args, client: ChatArtClient) -> dict:
+def build_full_scene_body(args, client: LitMediaClient) -> dict:
     """Build request body for Character Replace(full scene replace)."""
-    body: dict[str, Any] = {
-        "video_id": "104",
-        "mode": "animate",
-        "image_url": [],
-    }
+    body = {}
     if args.model:
-        body["gpt_type"] = get_model_id_by_name(args.model)
-        body["original_model"] = get_model_id_by_name(args.model)
+        model_id = get_model_id_by_name(args.model)
+        if model_id is None:
+            _fail_unknown_model(args.model, args.type)
+        body["video_model"] = model_id
     if args.input_image:
-        body["image_url"].append(resolve_file(client, args.input_image, args.quiet))
+        body["img_url"] = resolve_file(client, args.input_image, args.quiet)
     if args.input_video:
-        body["image_url"].append(resolve_file(client, args.input_video, args.quiet))
+        body["video_url"] = resolve_file(client, args.input_video, args.quiet)
         body["duration"] = int(get_video_duration(args.input_video, args.quiet) / 1000)
     if args.resolution:
         body["quality"] = str(args.resolution) + "p"
     return body
 
 
-def build_body_only_body(args, client: ChatArtClient) -> dict:
+def build_body_only_body(args, client: LitMediaClient) -> dict:
     """Build request body for Character Replace(only replacing the body)."""
     body: dict[str, Any] = {
-        "video_id": "104",
         "mode": "replace",
-        "image_url": [],
     }
     if args.model:
-        body["gpt_type"] = get_model_id_by_name(args.model)
-        body["original_model"] = get_model_id_by_name(args.model)
-
+        model_id = get_model_id_by_name(args.model)
+        if model_id is None:
+            _fail_unknown_model(args.model, args.type)
+        body["video_model"] = model_id
     if args.input_image:
-        body["image_url"].append(resolve_file(client, args.input_image, args.quiet))
+        body["img_url"] = resolve_file(client, args.input_image, args.quiet)
     if args.input_video:
-        body["image_url"].append(resolve_file(client, args.input_video, args.quiet))
+        body["video_url"] = resolve_file(client, args.input_video, args.quiet)
         body["duration"] = int(get_video_duration(args.input_video, args.quiet) / 1000)
     if args.resolution:
         body["quality"] = str(args.resolution) + "p"
     return body
 
-def build_body(args, client: ChatArtClient) -> dict:
+def build_body(args, client: LitMediaClient) -> dict:
     """Dispatch to the type-specific body builder, with model constraint checks."""
     if args.model:
         validate_model_params(
@@ -231,22 +250,22 @@ def build_body(args, client: ChatArtClient) -> dict:
         return build_body_only_body(args, client)
     raise ValueError(f"Unknown type: {args.type}")
 
-def do_submit(client: ChatArtClient, task_type: str, body: dict, quiet: bool) -> str:
+def do_submit(client: LitMediaClient, task_type: str, body: dict, quiet: bool) -> str:
     """POST submit task, return taskId."""
     path = ENDPOINTS["submit"]
     if not quiet:
         print(f"Submitting {task_type} task...", file=sys.stderr)
     result = client.post(path, json=body)
-    task_id = result["question_id"]
+    task_id = result["create_id"]
     if not quiet:
         print(f"Task submitted. taskId: {task_id}", file=sys.stderr)
     return task_id
 
 
-def do_poll(client: ChatArtClient, task_id: str,
+def do_poll(client: LitMediaClient, task_id: str,
             timeout: float, interval: float, quiet: bool) -> dict:
     """Poll until status is terminal or timeout is exceeded."""
-    path = ENDPOINTS["query"]  + f"?question_id={task_id}"
+    path = ENDPOINTS["query"]
     if not quiet:
         print(
             f"Polling task {task_id} (timeout={timeout}s, interval={interval}s)...",
@@ -262,7 +281,7 @@ def do_poll(client: ChatArtClient, task_id: str,
 
 def download_video(url: str, output: str, quiet: bool) -> None:
     """Download a video from URL to a local file."""
-    #import requests as req
+    import requests as req
 
     if not quiet:
         print(f"Downloading video to {output}...", file=sys.stderr)
@@ -279,12 +298,12 @@ def download_video(url: str, output: str, quiet: bool) -> None:
         print(f"Downloaded: {output} ({size_mb:.1f} MB)", file=sys.stderr)
 
 
-def print_result(result: dict, args, client: ChatArtClient) -> None:
+def print_result(result: dict, args, client: LitMediaClient) -> None:
     """Print final result: video URLs by default, full JSON with --json."""
     status = TaskStatus(result.get("status"))
 
 
-    video_url = result.get("message", {}).get("url")
+    video_url = result.get("video_url", "")
     if status == TaskStatus.COMPLETED:
         if args.output_dir and video_url:
             os.makedirs(args.output_dir, exist_ok=True)
@@ -300,7 +319,7 @@ def print_result(result: dict, args, client: ChatArtClient) -> None:
         cost = result.get("cost_credit", "N/A")
         print(f"status: {status.label}  cost: {cost} credits")
         
-        video_url = result.get("message", {}).get("url")
+        video_url = result.get("video_url", "")
         error_msg = result.get("error", "") or result.get("real_error", "")
         
         if video_url and status == TaskStatus.COMPLETED:
@@ -389,8 +408,10 @@ def cmd_estimate_cost(args, parser):
     duration = int(get_video_duration(args.input_video, False) / 1000)
     cost = estimate_cost(args.model, args.resolution, duration)
     if cost is None:
-        print(f"Cannot estimate cost for model '{args.model}' with given parameters.", file=sys.stderr)
-        print("Use list-models to see available models, or check references/api-docs.md.", file=sys.stderr)
+        print(f"Cannot estimate cost for model '{args.model}' with given parameters "
+              "— the model name may be wrong or the params unsupported.", file=sys.stderr)
+        print("Run list-models, show the model list to the user and let the user "
+              "pick, then re-run with the EXACT display name.", file=sys.stderr)
         sys.exit(1)
 
     if args.json:
@@ -404,7 +425,7 @@ def cmd_estimate_cost(args, parser):
 def cmd_run(args, parser):
     """Submit task then poll until done — full flow (default)."""
     validate_args(args, parser)
-    client = ChatArtClient()
+    client = LitMediaClient()
     body = build_body(args, client)
     task_id = do_submit(client, args.type, body, args.quiet)
     result = do_poll(client, task_id, args.timeout, args.interval, args.quiet)
@@ -414,7 +435,7 @@ def cmd_run(args, parser):
 def cmd_submit(args, parser):
     """Submit task only — print taskId and exit immediately."""
     validate_args(args, parser)
-    client = ChatArtClient()
+    client = LitMediaClient()
     body = build_body(args, client)
     task_id = do_submit(client, args.type, body, args.quiet)
     print(task_id)
@@ -422,7 +443,7 @@ def cmd_submit(args, parser):
 
 def cmd_query(args, parser):
     """Poll an existing task by taskId until done or timeout."""
-    client = ChatArtClient()
+    client = LitMediaClient()
     try:
         result = do_poll(
             client, args.task_id,
@@ -450,7 +471,7 @@ def cmd_query(args, parser):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Character Replace in Videos with Scene Consistency using ChatArt Common Task APIs.",
+        description="Character Replace in Videos with Scene Consistency using LitMedia Common Task APIs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 AGENT WORKFLOW RULES:
@@ -458,25 +479,28 @@ AGENT WORKFLOW RULES:
   2. Only use `query` if `run` timed out and you have a taskId to resume.
   3. `query` polls continuously (not once) until done or --timeout.
   4. NEVER hand a pending taskId back to the user — always poll to completion.
+  5. NO DEFAULT MODEL — ALWAYS run `list-models --type <type>` first, show
+     the model list to the user, let the user pick, then pass the EXACT
+     display name to `--model`. Never guess or reuse a name from examples.
 
 Task types:
   Full_Scene   — Use the whole image's person and  background in the video.
   Body_Only    — Use the image's person in the video, keep the video's background.
 
 Examples:
-  # List available models for a task type
+  # List available models for a task type (ALWAYS run first; user picks)
   python video_mimic.py list-models --type Full_Scene
 
   # Full Scene Replace (Full_Scene)
-  python video_mimic.py run --type Full_Scene --model "Kling V3.0" --resolution 720 \\
+  python video_mimic.py run --type Full_Scene --model "<exact display name from list-models>" --resolution 720 \\
       --input-image character.jpg --input-video video.mp4
 
   # Only Body Replace (Body_Only)
-  python video_mimic.py run --type Body_Only --model "Wan 2.2" --resolution 480 \\
+  python video_mimic.py run --type Body_Only --model "<exact display name from list-models>" --resolution 480 \\
       --input-image character.jpg --input-video video.mp4
 
   # Estimate cost before running
-  python video_mimic.py estimate-cost --model "Kling V3.0" --resolution 720 --input-video video.mp4
+  python video_mimic.py estimate-cost --model "<exact display name from list-models>" --resolution 720 --input-video video.mp4
 
   # Query a timed-out task
   python video_mimic.py query --task-id <taskId>
